@@ -184,8 +184,14 @@ export const dependencyTools = [
     inputSchema: z.object({
       name: z.string().describe("Package name"),
       version: z.string().optional().describe("Semver version or dist-tag (default: 'latest')"),
+      allowed: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "SPDX license identifiers to treat as allowed (default: MIT, ISC, BSD-2-Clause, BSD-3-Clause, Apache-2.0, 0BSD, Unlicense)",
+        ),
     }),
-    handler: async (input: { name: string; version?: string }) => {
+    handler: async (input: { name: string; version?: string; allowed?: string[] }) => {
       const ver = input.version ?? "latest";
       const res = await registryGet<VersionDoc>(`/${encPkg(input.name)}/${ver}`);
       if (!res.ok) return res;
@@ -223,20 +229,23 @@ export const dependencyTools = [
         }),
       );
 
-      const PERMISSIVE = new Set(["MIT", "ISC", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "0BSD", "Unlicense"]);
+      const allowedSet = new Set(
+        input.allowed ?? ["MIT", "ISC", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "0BSD", "Unlicense"],
+      );
 
       const results = [
         { name: pkg.name, version: pkg.version, license: pkg.license ?? "UNKNOWN" },
         ...depLicenses.map((d) => ({ name: d.name, version: "latest", license: d.license })),
       ];
 
-      const flagged = results.filter((r) => !PERMISSIVE.has(r.license));
+      const flagged = results.filter((r) => !allowedSet.has(r.license));
 
       return {
         ok: true,
         status: 200,
         data: {
           total: results.length,
+          allowed: [...allowedSet],
           flagged: flagged.length,
           packages: results,
           issues: flagged.length > 0 ? flagged : undefined,

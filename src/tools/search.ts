@@ -66,7 +66,7 @@ export const searchTools = [
         description: obj.package.description,
         date: obj.package.date,
         license: obj.package.license,
-        publisher: obj.package.publisher?.username,
+        publisher: obj.package.publisher,
         keywords: obj.package.keywords,
         links: obj.package.links,
         score: obj.score.detail,

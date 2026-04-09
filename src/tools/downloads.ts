@@ -79,9 +79,11 @@ export const downloadTools = [
     },
     inputSchema: z.object({
       name: z.string().describe("Package name"),
+      period: z.string().optional().describe("Period: 'last-day', 'last-week', 'last-month' (default: 'last-week')"),
     }),
-    handler: async (input: { name: string }) => {
-      return downloadsGet(`/versions/${encPkg(input.name)}/last-week`);
+    handler: async (input: { name: string; period?: string }) => {
+      const period = input.period ?? "last-week";
+      return downloadsGet(`/versions/${encPkg(input.name)}/${period}`);
     },
   },
 ] as const;

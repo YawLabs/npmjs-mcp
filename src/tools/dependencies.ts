@@ -87,13 +87,13 @@ export const dependencyTools = [
       const tree: Record<string, { version: string; dependencies: Record<string, string> }> = {};
 
       async function resolve(name: string, versionHint: string, currentDepth: number): Promise<void> {
-        const key = `${name}@${versionHint}`;
-        if (resolved.has(key) || currentDepth > maxDepth) return;
-        resolved.set(key, versionHint);
+        const hintKey = `${name}@${versionHint}`;
+        if (resolved.has(hintKey) || currentDepth > maxDepth) return;
+        resolved.set(hintKey, versionHint);
 
         const res = await registryGetAbbreviated<AbbreviatedPackument>(`/${encPkg(name)}`);
         if (!res.ok) {
-          tree[key] = { version: versionHint, dependencies: {} };
+          tree[hintKey] = { version: versionHint, dependencies: {} };
           return;
         }
 
@@ -105,18 +105,21 @@ export const dependencyTools = [
         } else if (pkg["dist-tags"][versionHint]) {
           resolvedVersion = pkg["dist-tags"][versionHint];
         } else {
-          // Take the latest dist-tag as fallback
-          resolvedVersion = pkg["dist-tags"].latest ?? Object.keys(pkg.versions).pop() ?? versionHint;
+          resolvedVersion = pkg["dist-tags"].latest ?? versionHint;
         }
+
+        // Deduplicate on resolved version (different ranges may resolve to the same version)
+        const resolvedKey = `${name}@${resolvedVersion}`;
+        if (tree[resolvedKey]) return;
 
         const versionData = pkg.versions[resolvedVersion];
         if (!versionData) {
-          tree[key] = { version: resolvedVersion, dependencies: {} };
+          tree[resolvedKey] = { version: resolvedVersion, dependencies: {} };
           return;
         }
 
         const deps = versionData.dependencies ?? {};
-        tree[`${name}@${resolvedVersion}`] = { version: resolvedVersion, dependencies: deps };
+        tree[resolvedKey] = { version: resolvedVersion, dependencies: deps };
 
         if (currentDepth < maxDepth) {
           const tasks = Object.entries(deps).map(([depName, depRange]) => resolve(depName, depRange, currentDepth + 1));

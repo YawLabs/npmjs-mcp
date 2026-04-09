@@ -79,9 +79,7 @@ export const authTools = [
           email: p.email,
           emailVerified: p.email_verified,
           fullname: p.fullname,
-          tfa: p.tfa
-            ? { enabled: true, mode: p.tfa.mode, pending: p.tfa.pending }
-            : { enabled: false },
+          tfa: p.tfa ? { enabled: true, mode: p.tfa.mode, pending: p.tfa.pending } : { enabled: false },
           homepage: p.homepage,
           github: p.github,
           twitter: p.twitter,

@@ -21,9 +21,7 @@ export const accessTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
-      const res = await registryGetAuth<Record<string, string>>(
-        `/-/package/${encPkg(input.name)}/collaborators`,
-      );
+      const res = await registryGetAuth<Record<string, string>>(`/-/package/${encPkg(input.name)}/collaborators`);
       if (!res.ok) return res;
 
       const collaborators = Object.entries(res.data!).map(([username, permissions]) => ({
@@ -60,9 +58,7 @@ export const accessTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
-      const res = await registryGetAuth<Record<string, unknown>>(
-        `/-/package/${encPkg(input.name)}/collaborators`,
-      );
+      const res = await registryGetAuth<Record<string, unknown>>(`/-/package/${encPkg(input.name)}/collaborators`);
 
       const result: Record<string, unknown> = {
         package: input.name,

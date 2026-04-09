@@ -66,8 +66,8 @@ export const packageTools = [
       if (!res.ok) return res;
 
       const pkg = res.data!;
-      const latest = pkg["dist-tags"].latest;
-      const latestVersion = pkg.versions[latest];
+      const latest = pkg["dist-tags"]?.latest;
+      const latestVersion = latest ? pkg.versions[latest] : undefined;
 
       return {
         ok: true,
@@ -109,7 +109,40 @@ export const packageTools = [
     }),
     handler: async (input: { name: string; version?: string }) => {
       const ver = input.version ?? "latest";
-      return registryGet<VersionDoc>(`/${encPkg(input.name)}/${ver}`);
+      const res = await registryGet<VersionDoc>(`/${encPkg(input.name)}/${ver}`);
+      if (!res.ok) return res;
+
+      const v = res.data!;
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          name: v.name,
+          version: v.version,
+          description: v.description,
+          license: v.license,
+          author: v.author,
+          maintainers: v.maintainers,
+          homepage: v.homepage,
+          repository: v.repository,
+          bugs: v.bugs,
+          keywords: v.keywords,
+          engines: v.engines,
+          dependencies: v.dependencies ?? {},
+          devDependencies: v.devDependencies ?? {},
+          peerDependencies: v.peerDependencies ?? {},
+          optionalDependencies: v.optionalDependencies ?? {},
+          deprecated: v.deprecated ?? false,
+          dist: {
+            shasum: v.dist.shasum,
+            integrity: v.dist.integrity,
+            tarball: v.dist.tarball,
+            fileCount: v.dist.fileCount,
+            unpackedSize: v.dist.unpackedSize,
+          },
+          publisher: v._npmUser?.name,
+        },
+      };
     },
   },
   {

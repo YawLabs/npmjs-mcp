@@ -112,16 +112,14 @@ export const workflowTools = [
         // from the API alone (tokens are redacted). But we can give accurate guidance.
         result.tokenType = "unknown (tokens are redacted in API)";
         result.canPublishHeadless = null; // unknown — depends on token type
-        result.recommendation =
-          `2FA is enabled (${result.twoFactorAuth}). Headless publishing ONLY works with automation/granular tokens. ` +
-          "Publish tokens from ~/.npmrc ALWAYS require OTP and WILL fail in CI/agent contexts. " +
-          "If publish fails with EOTP, your token is a publish token — you need an automation token.";
+        result.recommendation = `2FA is enabled (${result.twoFactorAuth}). Headless publishing ONLY works with automation/granular tokens. Publish tokens from ~/.npmrc ALWAYS require OTP and WILL fail in CI/agent contexts. If publish fails with EOTP, your token is a publish token — you need an automation token.`;
         result.ifPublishFails = {
           errorType: "2FA_REQUIRED",
           humanAction: {
             label: "Publish from your terminal (one-time)",
             command: "npm publish --access public --auth-type=web",
-            context: "Run in an INTERACTIVE terminal — a browser will open for 2FA. Do NOT run through piped/agent runners.",
+            context:
+              "Run in an INTERACTIVE terminal — a browser will open for 2FA. Do NOT run through piped/agent runners.",
           },
           permanentFix: {
             label: "Set up automation token (permanent fix for CI/agents)",
@@ -183,10 +181,7 @@ export const workflowTools = [
         actions.push({
           label: "Create automation token (for CI/agents)",
           url: "https://www.npmjs.com/settings/~/tokens",
-          context:
-            "Create a Granular Access Token with publish permissions" +
-            (scope ? ` scoped to ${scope}` : "") +
-            ", then set NPM_TOKEN in your environment",
+          context: `Create a Granular Access Token with publish permissions${scope ? ` scoped to ${scope}` : ""}, then set NPM_TOKEN in your environment`,
         });
       } else {
         // Verify token works
@@ -221,12 +216,7 @@ export const workflowTools = [
               checks.push({
                 check: "2FA status",
                 status: "info",
-                detail:
-                  `2FA is enabled (mode: ${tfa.mode}). In this non-interactive context:\n` +
-                  "  - Automation/granular tokens: can publish (bypass 2FA)\n" +
-                  "  - Publish tokens (from ~/.npmrc): WILL FAIL with EOTP error\n" +
-                  "  - --auth-type=web: IMPOSSIBLE (needs browser)\n" +
-                  "  - OTP codes: IMPOSSIBLE (agent can't enter them)",
+                detail: `2FA is enabled (mode: ${tfa.mode}). In this non-interactive context:\n  - Automation/granular tokens: can publish (bypass 2FA)\n  - Publish tokens (from ~/.npmrc): WILL FAIL with EOTP error\n  - --auth-type=web: IMPOSSIBLE (needs browser)\n  - OTP codes: IMPOSSIBLE (agent can't enter them)`,
               });
             } else {
               twoFactorAuth = "disabled";
@@ -252,10 +242,7 @@ export const workflowTools = [
                 checks.push({
                   check: "Token capability",
                   status: "warn",
-                  detail:
-                    `Found ${readWriteTokens.length} read-write token(s) out of ${totalTokens} total. ` +
-                    "Cannot determine token type from API (tokens are redacted). " +
-                    "If publish fails with EOTP, your active token is a publish-type token — you need an automation/granular token.",
+                  detail: `Found ${readWriteTokens.length} read-write token(s) out of ${totalTokens} total. Cannot determine token type from API (tokens are redacted). If publish fails with EOTP, your active token is a publish-type token — you need an automation/granular token.`,
                 });
                 canPublishHeadless = null; // unknown
               } else {
@@ -273,10 +260,7 @@ export const workflowTools = [
               checks.push({
                 check: "Org-scope token reuse",
                 status: "info",
-                detail:
-                  `${input.name} is under ${scope}. You have ${totalTokens} token(s). ` +
-                  `If any are granular tokens scoped to ${scope}, they cover ALL packages under that scope — ` +
-                  "check your tokens at https://www.npmjs.com/settings/~/tokens before creating duplicates.",
+                detail: `${input.name} is under ${scope}. You have ${totalTokens} token(s). If any are granular tokens scoped to ${scope}, they cover ALL packages under that scope — check your tokens at https://www.npmjs.com/settings/~/tokens before creating duplicates.`,
               });
             }
           }
@@ -295,7 +279,8 @@ export const workflowTools = [
           checks.push({
             check: "First publish access flag",
             status: "info",
-            detail: "First publish of a scoped package requires --access public (otherwise it defaults to restricted/paid).",
+            detail:
+              "First publish of a scoped package requires --access public (otherwise it defaults to restricted/paid).",
           });
         }
       } else if (pkgRes.ok && pkgRes.data) {
@@ -313,9 +298,7 @@ export const workflowTools = [
           checks.push({
             check: "Maintainer access",
             status: "fail",
-            detail:
-              `You (${username}) are NOT a maintainer. Maintainers: ${maintainers.join(", ")}. ` +
-              "You need to be added as a maintainer or collaborator.",
+            detail: `You (${username}) are NOT a maintainer. Maintainers: ${maintainers.join(", ")}. You need to be added as a maintainer or collaborator.`,
           });
         } else {
           checks.push({
@@ -337,10 +320,7 @@ export const workflowTools = [
         actions.push({
           label: "Set up automation token (permanent fix for CI/agents)",
           url: "https://www.npmjs.com/settings/~/tokens",
-          context:
-            "Create a 'Granular Access Token' with publish permissions" +
-            (scope ? ` scoped to ${scope} packages` : "") +
-            ". This bypasses 2FA for headless publishing.",
+          context: `Create a 'Granular Access Token' with publish permissions${scope ? ` scoped to ${scope} packages` : ""}. This bypasses 2FA for headless publishing.`,
         });
       }
 

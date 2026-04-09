@@ -36,9 +36,6 @@ export const registryTools = [
     handler: async (input: { limit?: number }) => {
       const limit = input.limit ?? 25;
 
-      // First get the current update_seq so we can request the tail
-      const infoRes = await replicateGet<{ update_seq: number; doc_count: number }>("/_db_updates");
-      // If that fails, try a different approach: get the DB info first
       const dbRes = await replicateGet<{ update_seq: number; doc_count: number }>("/");
       if (!dbRes.ok) return dbRes;
 

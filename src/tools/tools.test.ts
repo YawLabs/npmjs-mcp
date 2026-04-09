@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { accessTools } from "./access.js";
 import { analysisTools } from "./analysis.js";
+import { authTools } from "./auth.js";
 import { dependencyTools } from "./dependencies.js";
 import { downloadTools } from "./downloads.js";
+import { hookTools } from "./hooks.js";
+import { orgTools } from "./orgs.js";
 import { packageTools } from "./packages.js";
+import { provenanceTools } from "./provenance.js";
 import { registryTools } from "./registry.js";
 import { searchTools } from "./search.js";
 import { securityTools } from "./security.js";
+import { workflowTools } from "./workflows.js";
 
 const allTools = [
   ...searchTools,
@@ -16,6 +22,12 @@ const allTools = [
   ...securityTools,
   ...analysisTools,
   ...registryTools,
+  ...authTools,
+  ...orgTools,
+  ...accessTools,
+  ...provenanceTools,
+  ...hookTools,
+  ...workflowTools,
 ];
 
 describe("Tool definitions", () => {
@@ -30,7 +42,7 @@ describe("Tool definitions", () => {
   });
 
   it("should have the expected total tool count", () => {
-    assert.equal(allTools.length, 22);
+    assert.equal(allTools.length, 35);
   });
 
   for (const tool of allTools) {
@@ -80,4 +92,10 @@ describe("Tool modules export correct counts", () => {
   it("securityTools has 3 tools", () => assert.equal(securityTools.length, 3));
   it("analysisTools has 4 tools", () => assert.equal(analysisTools.length, 4));
   it("registryTools has 2 tools", () => assert.equal(registryTools.length, 2));
+  it("authTools has 3 tools", () => assert.equal(authTools.length, 3));
+  it("orgTools has 4 tools", () => assert.equal(orgTools.length, 4));
+  it("accessTools has 2 tools", () => assert.equal(accessTools.length, 2));
+  it("provenanceTools has 1 tool", () => assert.equal(provenanceTools.length, 1));
+  it("hookTools has 1 tool", () => assert.equal(hookTools.length, 1));
+  it("workflowTools has 2 tools", () => assert.equal(workflowTools.length, 2));
 });

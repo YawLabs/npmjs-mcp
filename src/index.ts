@@ -2,13 +2,19 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { accessTools } from "./tools/access.js";
 import { analysisTools } from "./tools/analysis.js";
+import { authTools } from "./tools/auth.js";
 import { dependencyTools } from "./tools/dependencies.js";
 import { downloadTools } from "./tools/downloads.js";
+import { hookTools } from "./tools/hooks.js";
+import { orgTools } from "./tools/orgs.js";
 import { packageTools } from "./tools/packages.js";
+import { provenanceTools } from "./tools/provenance.js";
 import { registryTools } from "./tools/registry.js";
 import { searchTools } from "./tools/search.js";
 import { securityTools } from "./tools/security.js";
+import { workflowTools } from "./tools/workflows.js";
 
 // Injected at build time by esbuild; falls back to reading package.json for tsc builds.
 declare const __VERSION__: string | undefined;
@@ -36,6 +42,12 @@ const allTools = [
   ...securityTools,
   ...analysisTools,
   ...registryTools,
+  ...authTools,
+  ...orgTools,
+  ...accessTools,
+  ...provenanceTools,
+  ...hookTools,
+  ...workflowTools,
 ];
 
 const server = new McpServer({

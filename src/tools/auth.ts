@@ -1,0 +1,142 @@
+import { z } from "zod";
+import { registryGetAuth, requireAuth } from "../api.js";
+
+interface TokenObject {
+  token: string;
+  key: string;
+  cidr_whitelist: string[];
+  created: string;
+  updated: string;
+  readonly: boolean;
+}
+
+interface TokenListResponse {
+  total: number;
+  objects: TokenObject[];
+  urls: { next?: string; prev?: string };
+}
+
+interface UserProfile {
+  name?: string;
+  email?: string;
+  email_verified?: boolean;
+  created?: string;
+  updated?: string;
+  tfa?: { pending: boolean; mode: string } | null;
+  fullname?: string;
+  homepage?: string;
+  freenode?: string;
+  twitter?: string;
+  github?: string;
+  cidr_whitelist?: string[] | null;
+}
+
+export const authTools = [
+  {
+    name: "npm_whoami",
+    description:
+      "Check the currently authenticated npm user. Verifies the NPM_TOKEN is valid and returns the associated username. Essential for debugging auth issues before publishing.",
+    annotations: {
+      title: "Check npm auth",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: z.object({}),
+    handler: async () => {
+      const authErr = requireAuth();
+      if (authErr) return authErr;
+
+      return registryGetAuth<{ username: string }>("/-/whoami");
+    },
+  },
+  {
+    name: "npm_profile",
+    description:
+      "Get the authenticated user's npm profile — name, email, 2FA status, creation date. Useful for checking whether 2FA is enabled (which affects token requirements for publishing).",
+    annotations: {
+      title: "Get npm profile",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: z.object({}),
+    handler: async () => {
+      const authErr = requireAuth();
+      if (authErr) return authErr;
+
+      const res = await registryGetAuth<UserProfile>("/-/npm/v1/user");
+      if (!res.ok) return res;
+
+      const p = res.data!;
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          name: p.name,
+          email: p.email,
+          emailVerified: p.email_verified,
+          fullname: p.fullname,
+          tfa: p.tfa
+            ? { enabled: true, mode: p.tfa.mode, pending: p.tfa.pending }
+            : { enabled: false },
+          homepage: p.homepage,
+          github: p.github,
+          twitter: p.twitter,
+          created: p.created,
+          updated: p.updated,
+          cidrWhitelist: p.cidr_whitelist,
+        },
+      };
+    },
+  },
+  {
+    name: "npm_tokens",
+    description:
+      "List all access tokens for the authenticated npm user. Shows token type, creation date, CIDR restrictions, and read-only status. " +
+      "Critical for finding reusable automation/granular tokens that cover your org scope — avoids the common mistake of creating duplicate tokens or using publish tokens in CI (which still require OTP).",
+    annotations: {
+      title: "List npm tokens",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: z.object({
+      page: z.number().min(0).optional().describe("Page number for pagination (default: 0)"),
+      perPage: z.number().min(1).max(100).optional().describe("Results per page (default: 25)"),
+    }),
+    handler: async (input: { page?: number; perPage?: number }) => {
+      const authErr = requireAuth();
+      if (authErr) return authErr;
+
+      const params = new URLSearchParams();
+      if (input.page !== undefined) params.set("page", String(input.page));
+      if (input.perPage !== undefined) params.set("perPage", String(input.perPage));
+
+      const qs = params.toString();
+      const path = `/-/npm/v1/tokens${qs ? `?${qs}` : ""}`;
+      const res = await registryGetAuth<TokenListResponse>(path);
+      if (!res.ok) return res;
+
+      const data = res.data!;
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          total: data.total,
+          tokens: data.objects.map((t) => ({
+            token: t.token,
+            key: t.key,
+            readonly: t.readonly,
+            cidrWhitelist: t.cidr_whitelist,
+            created: t.created,
+            updated: t.updated,
+          })),
+        },
+      };
+    },
+  },
+] as const;

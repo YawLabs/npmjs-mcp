@@ -24,6 +24,7 @@ export interface ApiResponse<T = unknown> {
 
 /** URL-encode a package name (handles scoped packages like @scope/name). */
 export function encPkg(name: string): string {
+  if (!name || name === "@") throw new Error("Invalid package name");
   return name.startsWith("@") ? `@${encodeURIComponent(name.slice(1))}` : encodeURIComponent(name);
 }
 

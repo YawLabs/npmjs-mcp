@@ -52,8 +52,8 @@ export const analysisTools = [
           }
 
           const pkg = pkgRes.data!;
-          const latest = pkg["dist-tags"].latest;
-          const latestVersion = pkg.versions[latest];
+          const latest = pkg["dist-tags"]?.latest;
+          const latestVersion = latest ? pkg.versions[latest] : undefined;
           const versionKeys = Object.keys(pkg.versions);
 
           return {
@@ -65,7 +65,7 @@ export const analysisTools = [
             weeklyDownloads: dlRes.ok ? dlRes.data!.downloads : null,
             versionCount: versionKeys.length,
             created: pkg.time.created,
-            lastPublish: pkg.time[latest],
+            lastPublish: latest ? pkg.time[latest] : undefined,
             deprecated: latestVersion?.deprecated ?? false,
             hasReadme: !!(pkg.readme && pkg.readme.length > 0),
             repository: pkg.repository,
@@ -102,8 +102,8 @@ export const analysisTools = [
       if (!pkgRes.ok) return pkgRes;
 
       const pkg = pkgRes.data!;
-      const latest = pkg["dist-tags"].latest;
-      const latestVersion = pkg.versions[latest];
+      const latest = pkg["dist-tags"]?.latest;
+      const latestVersion = latest ? pkg.versions[latest] : undefined;
       const versionKeys = Object.keys(pkg.versions);
 
       // Calculate release cadence from the time object
@@ -129,7 +129,7 @@ export const analysisTools = [
 
       // Score components
       const hasLicense = !!(pkg.license ?? latestVersion?.license);
-      const hasReadme = !!(pkg.readme && pkg.readme.length > 100);
+      const hasReadme = !!(pkg.readme && pkg.readme.length > 0);
       const hasRepo = !!pkg.repository;
       const hasHomepage = !!pkg.homepage;
       const isDeprecated = !!latestVersion?.deprecated;

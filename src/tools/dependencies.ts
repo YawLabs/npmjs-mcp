@@ -83,21 +83,49 @@ export const dependencyTools = [
     }),
     handler: async (input: { name: string; version?: string; depth?: number }) => {
       const maxDepth = input.depth ?? 3;
-      const resolved = new Map<string, string>(); // pkg@ver -> resolved version
+      const MAX_CONCURRENT = 10;
+      const packumentCache = new Map<string, AbbreviatedPackument>(); // pkg name -> packument
+      const resolved = new Set<string>(); // "name@hint" keys already queued
       const tree: Record<string, { version: string; dependencies: Record<string, string> }> = {};
+      const warnings: string[] = [];
+
+      // Simple concurrency limiter
+      let active = 0;
+      const queue: Array<() => void> = [];
+      function runLimited<T>(fn: () => Promise<T>): Promise<T> {
+        return new Promise<T>((resolve, reject) => {
+          const run = () => {
+            active++;
+            fn()
+              .then(resolve, reject)
+              .finally(() => {
+                active--;
+                if (queue.length > 0) queue.shift()!();
+              });
+          };
+          if (active < MAX_CONCURRENT) run();
+          else queue.push(run);
+        });
+      }
 
       async function resolve(name: string, versionHint: string, currentDepth: number): Promise<void> {
         const hintKey = `${name}@${versionHint}`;
         if (resolved.has(hintKey) || currentDepth > maxDepth) return;
-        resolved.set(hintKey, versionHint);
+        resolved.add(hintKey);
 
-        const res = await registryGetAbbreviated<AbbreviatedPackument>(`/${encPkg(name)}`);
-        if (!res.ok) {
-          tree[hintKey] = { version: versionHint, dependencies: {} };
-          return;
+        // Cache packuments by package name to avoid duplicate fetches
+        let pkg = packumentCache.get(name);
+        if (!pkg) {
+          const res = await runLimited(() => registryGetAbbreviated<AbbreviatedPackument>(`/${encPkg(name)}`));
+          if (!res.ok) {
+            warnings.push(`Failed to fetch ${name}: ${res.error}`);
+            tree[hintKey] = { version: versionHint, dependencies: {} };
+            return;
+          }
+          pkg = res.data!;
+          packumentCache.set(name, pkg);
         }
 
-        const pkg = res.data!;
         // Resolve to latest if we got a range/tag
         let resolvedVersion: string;
         if (pkg.versions[versionHint]) {
@@ -105,7 +133,7 @@ export const dependencyTools = [
         } else if (pkg["dist-tags"][versionHint]) {
           resolvedVersion = pkg["dist-tags"][versionHint];
         } else {
-          resolvedVersion = pkg["dist-tags"].latest ?? versionHint;
+          resolvedVersion = pkg["dist-tags"]?.latest ?? versionHint;
         }
 
         // Deduplicate on resolved version (different ranges may resolve to the same version)
@@ -137,6 +165,7 @@ export const dependencyTools = [
           depth: maxDepth,
           totalPackages: Object.keys(tree).length,
           tree,
+          ...(warnings.length > 0 ? { warnings } : {}),
         },
       } as ApiResponse;
     },
@@ -164,10 +193,29 @@ export const dependencyTools = [
       const pkg = res.data!;
       const deps = Object.keys(pkg.dependencies ?? {});
 
-      // Fetch license info for all direct deps in parallel
+      // Fetch license info for direct deps with concurrency limit
+      const MAX_CONCURRENT = 10;
+      let active = 0;
+      const queue: Array<() => void> = [];
+      function runLimited<T>(fn: () => Promise<T>): Promise<T> {
+        return new Promise<T>((resolve, reject) => {
+          const run = () => {
+            active++;
+            fn()
+              .then(resolve, reject)
+              .finally(() => {
+                active--;
+                if (queue.length > 0) queue.shift()!();
+              });
+          };
+          if (active < MAX_CONCURRENT) run();
+          else queue.push(run);
+        });
+      }
+
       const depLicenses = await Promise.all(
         deps.map(async (depName) => {
-          const depRes = await registryGet<VersionDoc>(`/${encPkg(depName)}/latest`);
+          const depRes = await runLimited(() => registryGet<VersionDoc>(`/${encPkg(depName)}/latest`));
           return {
             name: depName,
             license: depRes.ok ? (depRes.data?.license ?? "UNKNOWN") : "FETCH_ERROR",

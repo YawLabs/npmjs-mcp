@@ -58,7 +58,13 @@ export const accessTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
-      const res = await registryGetAuth<Record<string, unknown>>(`/-/package/${encPkg(input.name)}/collaborators`);
+      const [accessRes, collabRes] = await Promise.all([
+        registryGetAuth<Record<string, unknown>>(`/-/package/${encPkg(input.name)}/access`),
+        registryGetAuth<Record<string, string>>(`/-/package/${encPkg(input.name)}/collaborators`),
+      ]);
+
+      // Need at least one successful response
+      if (!accessRes.ok && !collabRes.ok) return collabRes;
 
       const result: Record<string, unknown> = {
         package: input.name,
@@ -72,13 +78,15 @@ export const accessTools = [
           "and npm_tokens to check if you have a token scoped to this org.";
       }
 
-      if (res.ok) {
-        result.collaborators = Object.entries(res.data!).map(([username, permissions]) => ({
+      if (accessRes.ok) {
+        result.access = accessRes.data;
+      }
+
+      if (collabRes.ok) {
+        result.collaborators = Object.entries(collabRes.data!).map(([username, permissions]) => ({
           username,
           permissions,
         }));
-      } else {
-        return res;
       }
 
       return { ok: true, status: 200, data: result };

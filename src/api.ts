@@ -147,3 +147,99 @@ export function downloadsGet<T = unknown>(path: string): Promise<ApiResponse<T>>
 export function replicateGet<T = unknown>(path: string): Promise<ApiResponse<T>> {
   return request<T>(REPLICATE_URL, path);
 }
+
+// ─── Semver helpers (lightweight, no external deps) ───
+
+/** Parse a semver string into [major, minor, patch]. Returns null if unparseable. */
+function parseSemver(v: string): [number, number, number] | null {
+  const m = v.match(/^(\d+)\.(\d+)\.(\d+)/);
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+/** Compare two semver tuples: -1 if a<b, 0 if equal, 1 if a>b. */
+function cmpSemver(a: [number, number, number], b: [number, number, number]): number {
+  for (let i = 0; i < 3; i++) {
+    if (a[i] < b[i]) return -1;
+    if (a[i] > b[i]) return 1;
+  }
+  return 0;
+}
+
+/**
+ * Find the highest version from `versions` that satisfies `range`.
+ * Handles ^, ~, >=, <=, exact, and x-ranges. Falls back to null if no match.
+ */
+export function maxSatisfying(versions: string[], range: string): string | null {
+  // Strip leading whitespace/v prefix
+  const r = range.trim().replace(/^v/, "");
+
+  // Exact version
+  if (versions.includes(r)) return r;
+
+  let minInclusive: [number, number, number] | null = null;
+  let maxExclusive: [number, number, number] | null = null;
+
+  if (r.startsWith("^")) {
+    const base = parseSemver(r.slice(1));
+    if (!base) return null;
+    minInclusive = base;
+    // ^1.2.3 -> <2.0.0; ^0.2.3 -> <0.3.0; ^0.0.3 -> <0.0.4
+    if (base[0] > 0) maxExclusive = [base[0] + 1, 0, 0];
+    else if (base[1] > 0) maxExclusive = [0, base[1] + 1, 0];
+    else maxExclusive = [0, 0, base[2] + 1];
+  } else if (r.startsWith("~")) {
+    const base = parseSemver(r.slice(1));
+    if (!base) return null;
+    minInclusive = base;
+    // ~1.2.3 -> <1.3.0
+    maxExclusive = [base[0], base[1] + 1, 0];
+  } else if (r.startsWith(">=")) {
+    const base = parseSemver(r.slice(2));
+    if (!base) return null;
+    minInclusive = base;
+  } else if (r.startsWith("<=")) {
+    const base = parseSemver(r.slice(2));
+    if (!base) return null;
+    maxExclusive = [base[0], base[1], base[2] + 1]; // inclusive upper
+  } else {
+    // Try x-ranges: 1.x, 1.2.x, 1, 1.2
+    const xm = r.match(/^(\d+)(?:\.(\d+|x)(?:\.(\d+|x))?)?$/);
+    if (xm) {
+      const major = Number(xm[1]);
+      const minor = xm[2] !== undefined && xm[2] !== "x" ? Number(xm[2]) : null;
+      if (minor === null) {
+        minInclusive = [major, 0, 0];
+        maxExclusive = [major + 1, 0, 0];
+      } else {
+        const patch = xm[3] !== undefined && xm[3] !== "x" ? Number(xm[3]) : null;
+        if (patch === null) {
+          minInclusive = [major, minor, 0];
+          maxExclusive = [major, minor + 1, 0];
+        } else {
+          // Exact version already handled above
+          return null;
+        }
+      }
+    } else {
+      return null;
+    }
+  }
+
+  let best: string | null = null;
+  let bestParsed: [number, number, number] | null = null;
+
+  for (const v of versions) {
+    // Skip prereleases (e.g. 1.0.0-beta.1) unless range explicitly targets one
+    if (v.includes("-") && !r.includes("-")) continue;
+    const parsed = parseSemver(v);
+    if (!parsed) continue;
+    if (minInclusive && cmpSemver(parsed, minInclusive) < 0) continue;
+    if (maxExclusive && cmpSemver(parsed, maxExclusive) >= 0) continue;
+    if (!bestParsed || cmpSemver(parsed, bestParsed) > 0) {
+      best = v;
+      bestParsed = parsed;
+    }
+  }
+
+  return best;
+}

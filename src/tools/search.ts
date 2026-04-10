@@ -16,8 +16,6 @@ interface SearchResult {
     };
     score: { final: number; detail: { quality: number; popularity: number; maintenance: number } };
     searchScore: number;
-    downloads?: { monthly: number; weekly: number };
-    dependents?: string;
   }>;
   total: number;
 }
@@ -70,8 +68,6 @@ export const searchTools = [
         keywords: obj.package.keywords,
         links: obj.package.links,
         score: obj.score.detail,
-        downloads: obj.downloads,
-        dependents: obj.dependents,
       }));
 
       return { ok: true, status: 200, data: { total: res.data!.total, results } };

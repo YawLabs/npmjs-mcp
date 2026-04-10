@@ -39,12 +39,10 @@ export const analysisTools = [
     handler: async (input: { packages: string[] }) => {
       const results = await Promise.all(
         input.packages.map(async (name) => {
-          const [pkgRes, dlRes, auditRes] = await Promise.all([
+          // Fetch packument and downloads in parallel first
+          const [pkgRes, dlRes] = await Promise.all([
             registryGet<Packument>(`/${encPkg(name)}`),
             downloadsGet<DownloadPoint>(`/downloads/point/last-week/${encPkg(name)}`),
-            registryPost<Record<string, unknown[]>>("/-/npm/v1/security/advisories/bulk", {
-              [name]: ["latest"],
-            }),
           ]);
 
           if (!pkgRes.ok) {
@@ -55,6 +53,17 @@ export const analysisTools = [
           const latest = pkg["dist-tags"]?.latest;
           const latestVersion = latest ? pkg.versions[latest] : undefined;
           const versionKeys = Object.keys(pkg.versions);
+
+          // Audit with the real resolved version (not "latest" dist-tag)
+          let vulnerabilities = 0;
+          if (latest) {
+            const auditRes = await registryPost<Record<string, unknown[]>>("/-/npm/v1/security/advisories/bulk", {
+              [name]: [latest],
+            });
+            if (auditRes.ok && auditRes.data?.[name]) {
+              vulnerabilities = (auditRes.data[name] as unknown[]).length;
+            }
+          }
 
           return {
             name,
@@ -70,7 +79,7 @@ export const analysisTools = [
             hasReadme: !!(pkg.readme && pkg.readme.length > 0),
             repository: pkg.repository,
             homepage: pkg.homepage,
-            vulnerabilities: auditRes.ok && auditRes.data?.[name] ? (auditRes.data[name] as unknown[]).length : 0,
+            vulnerabilities,
           };
         }),
       );
@@ -105,6 +114,18 @@ export const analysisTools = [
       const latest = pkg["dist-tags"]?.latest;
       const latestVersion = latest ? pkg.versions[latest] : undefined;
       const versionKeys = Object.keys(pkg.versions);
+
+      // Security check — audit the latest version
+      let vulnerabilityCount: number | null = null;
+      if (latest) {
+        const auditRes = await registryPost<Record<string, unknown[]>>("/-/npm/v1/security/advisories/bulk", {
+          [input.name]: [latest],
+        });
+        if (auditRes.ok) {
+          const advisories = auditRes.data?.[input.name];
+          vulnerabilityCount = Array.isArray(advisories) ? advisories.length : 0;
+        }
+      }
 
       // Calculate release cadence from the time object
       const publishDates = versionKeys
@@ -148,6 +169,7 @@ export const analysisTools = [
             versionCount: versionKeys.length,
             daysSinceLastPublish,
             avgDaysBetweenReleases,
+            vulnerabilityCount,
             hasLicense,
             hasReadme,
             hasRepo,

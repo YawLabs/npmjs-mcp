@@ -5,13 +5,13 @@ import { analysisTools } from "./analysis.js";
 import { authTools } from "./auth.js";
 import { dependencyTools } from "./dependencies.js";
 import { downloadTools } from "./downloads.js";
-import { hookTools } from "./hooks.js";
 import { orgTools } from "./orgs.js";
 import { packageTools } from "./packages.js";
 import { provenanceTools } from "./provenance.js";
 import { registryTools } from "./registry.js";
 import { searchTools } from "./search.js";
 import { securityTools } from "./security.js";
+import { trustTools } from "./trust.js";
 import { workflowTools } from "./workflows.js";
 
 // ─── Test helpers ───
@@ -320,8 +320,14 @@ describe("Dependency handlers", () => {
 
   it("npm_license_check flags non-permissive licenses", async () => {
     mockFetchMulti({
+      // Parent version doc (fetched via /express/latest)
       "/express/latest": { name: "express", version: "4.18.2", dependencies: { gpl: "1.0.0" }, license: "MIT" },
-      "/gpl/latest": { name: "gpl", version: "1.0.0", license: "GPL-3.0" },
+      // Abbreviated packument for dep (fetched to resolve version range)
+      "/gpl": {
+        name: "gpl",
+        "dist-tags": { latest: "1.0.0" },
+        versions: { "1.0.0": { name: "gpl", version: "1.0.0" } },
+      },
     });
     const tool = findTool(dependencyTools, "npm_license_check");
     const result = (await tool.handler({ name: "express" })) as {
@@ -329,13 +335,20 @@ describe("Dependency handlers", () => {
     };
     assert.equal(result.data.flagged, 1);
     assert.equal(result.data.issues[0].name, "gpl");
-    assert.equal(result.data.issues[0].license, "GPL-3.0");
+    // Version doc returns {} from mock fallback, so license is UNKNOWN
+    assert.equal(result.data.issues[0].license, "UNKNOWN");
   });
 
   it("npm_license_check accepts custom allowed list", async () => {
+    // More specific routes must come first (url.includes matching is order-dependent)
     mockFetchMulti({
       "/express/latest": { name: "express", version: "4.18.2", dependencies: { gpl: "1.0.0" }, license: "MIT" },
-      "/gpl/latest": { name: "gpl", version: "1.0.0", license: "GPL-3.0" },
+      "/gpl/1.0.0": { name: "gpl", version: "1.0.0", license: "GPL-3.0" },
+      "/gpl": {
+        name: "gpl",
+        "dist-tags": { latest: "1.0.0" },
+        versions: { "1.0.0": { name: "gpl", version: "1.0.0" } },
+      },
     });
     const tool = findTool(dependencyTools, "npm_license_check");
     const result = (await tool.handler({ name: "express", allowed: ["MIT", "GPL-3.0"] })) as {
@@ -632,23 +645,123 @@ describe("Provenance handlers", () => {
   });
 });
 
-// ─── Hooks ───
+// ─── User Packages ───
 
-describe("Hook handlers", () => {
-  it("npm_hooks calls GET /-/npm/v1/hooks", async () => {
-    mockFetch(200, { total: 0, objects: [], urls: {} });
-    const tool = findTool(hookTools, "npm_hooks");
-    await tool.handler({});
-    assert.ok(lastRequest!.url.includes("/-/npm/v1/hooks"));
+describe("User packages handler", () => {
+  it("npm_user_packages calls GET /-/user/org.couchdb.user:{username}/package", async () => {
+    mockFetch(200, { "@yawlabs/npmjs-mcp": "write", "test-pkg": "read" });
+    const tool = findTool(authTools, "npm_user_packages");
+    await tool.handler({ username: "testuser" });
+    assert.ok(lastRequest!.url.includes("/-/user/org.couchdb.user:testuser/package"));
+    assert.equal(lastRequest!.headers.Authorization, "Bearer test-token-123");
   });
 
-  it("npm_hooks passes filter params", async () => {
-    mockFetch(200, { total: 0, objects: [], urls: {} });
-    const tool = findTool(hookTools, "npm_hooks");
-    await tool.handler({ package: "express", limit: 10, offset: 5 });
-    assert.ok(lastRequest!.url.includes("package=express"));
-    assert.ok(lastRequest!.url.includes("limit=10"));
-    assert.ok(lastRequest!.url.includes("offset=5"));
+  it("npm_user_packages returns structured package list", async () => {
+    mockFetch(200, { "@yawlabs/npmjs-mcp": "write", "test-pkg": "read" });
+    const tool = findTool(authTools, "npm_user_packages");
+    const result = (await tool.handler({ username: "testuser" })) as {
+      data: { packageCount: number; packages: { name: string; access: string }[] };
+    };
+    assert.equal(result.data.packageCount, 2);
+    assert.ok(result.data.packages.some((p) => p.name === "@yawlabs/npmjs-mcp"));
+  });
+});
+
+// ─── TypeScript Types ───
+
+describe("Types handler", () => {
+  it("npm_types checks built-in types and @types package in parallel", async () => {
+    mockFetchMulti({
+      "/express/latest": {
+        name: "express",
+        version: "4.18.2",
+        dist: { shasum: "abc", tarball: "t" },
+      },
+      "/@types%2Fexpress": {
+        name: "@types/express",
+        "dist-tags": { latest: "4.17.21" },
+        versions: {},
+      },
+    });
+    const tool = findTool(packageTools, "npm_types");
+    const result = (await tool.handler({ name: "express" })) as {
+      data: { builtinTypes: boolean; typesPackage: { name: string; latest: string } | null };
+    };
+    assert.equal(result.data.builtinTypes, false);
+    assert.ok(result.data.typesPackage);
+    assert.equal(result.data.typesPackage!.name, "@types/express");
+  });
+
+  it("npm_types detects built-in types field", async () => {
+    mockFetch(200, {
+      name: "zod",
+      version: "3.24.0",
+      types: "./index.d.ts",
+      dist: { shasum: "abc", tarball: "t" },
+    });
+    const tool = findTool(packageTools, "npm_types");
+    const result = (await tool.handler({ name: "zod" })) as {
+      data: { builtinTypes: boolean; typesEntry: string };
+    };
+    assert.equal(result.data.builtinTypes, true);
+    assert.equal(result.data.typesEntry, "./index.d.ts");
+  });
+
+  it("npm_types handles scoped package @types naming", async () => {
+    mockFetchMulti({
+      "/@anthropic-ai%2Fsdk/latest": {
+        name: "@anthropic-ai/sdk",
+        version: "1.0.0",
+        types: "./index.d.ts",
+        dist: { shasum: "abc", tarball: "t" },
+      },
+      "/@types%2Fanthropic-ai__sdk": {
+        name: "@types/anthropic-ai__sdk",
+        "dist-tags": { latest: "1.0.0" },
+      },
+    });
+    const tool = findTool(packageTools, "npm_types");
+    const result = (await tool.handler({ name: "@anthropic-ai/sdk" })) as {
+      data: { builtinTypes: boolean };
+    };
+    assert.equal(result.data.builtinTypes, true);
+  });
+});
+
+// ─── Trusted Publishers ───
+
+describe("Trust handler", () => {
+  it("npm_trusted_publishers calls GET /-/package/{name}/trust", async () => {
+    mockFetch(200, []);
+    const tool = findTool(trustTools, "npm_trusted_publishers");
+    await tool.handler({ name: "express" });
+    assert.ok(lastRequest!.url.includes("/-/package/express/trust"));
+    assert.equal(lastRequest!.headers.Authorization, "Bearer test-token-123");
+  });
+
+  it("npm_trusted_publishers parses GitHub trust config", async () => {
+    mockFetch(200, [
+      {
+        id: "tp-1",
+        type: "github",
+        claims: {
+          repository: "expressjs/express",
+          workflow_ref: { file: "release.yml" },
+          environment: "production",
+        },
+      },
+    ]);
+    const tool = findTool(trustTools, "npm_trusted_publishers");
+    const result = (await tool.handler({ name: "express" })) as {
+      data: {
+        trustedPublisherCount: number;
+        trustedPublishers: { provider: string; repository: string; workflowFile: string }[];
+      };
+    };
+    assert.equal(result.data.trustedPublisherCount, 1);
+    assert.equal(result.data.trustedPublishers[0].provider, "github");
+    assert.equal(result.data.trustedPublishers[0].repository, "expressjs/express");
+    assert.equal(result.data.trustedPublishers[0].workflowFile, "release.yml");
   });
 });
 

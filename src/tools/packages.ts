@@ -43,6 +43,8 @@ interface VersionDoc {
     signatures?: Array<{ sig: string; keyid: string }>;
   };
   deprecated?: string;
+  types?: string;
+  typings?: string;
   _npmUser?: { name: string; email?: string };
 }
 
@@ -147,7 +149,8 @@ export const packageTools = [
   },
   {
     name: "npm_versions",
-    description: "List all published versions of a package with their publish dates, ordered newest first.",
+    description:
+      "List published versions of a package with their publish dates, ordered newest first. Returns up to `limit` versions (default 50). Set limit=0 to return all.",
     annotations: {
       title: "List versions",
       readOnlyHint: true,
@@ -157,13 +160,15 @@ export const packageTools = [
     },
     inputSchema: z.object({
       name: z.string().describe("Package name"),
+      limit: z.number().min(0).optional().describe("Max versions to return, newest first (default 50, 0 = all)"),
     }),
-    handler: async (input: { name: string }) => {
+    handler: async (input: { name: string; limit?: number }) => {
       const res = await registryGet<Packument>(`/${encPkg(input.name)}`);
       if (!res.ok) return res;
 
       const pkg = res.data!;
-      const versions = Object.keys(pkg.versions)
+      const limit = input.limit ?? 50;
+      const allVersions = Object.keys(pkg.versions)
         .map((v) => ({
           version: v,
           date: pkg.time[v],
@@ -172,13 +177,16 @@ export const packageTools = [
         }))
         .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
+      const versions = limit > 0 ? allVersions.slice(0, limit) : allVersions;
+
       return {
         ok: true,
         status: 200,
         data: {
           name: pkg.name,
           distTags: pkg["dist-tags"],
-          total: versions.length,
+          total: allVersions.length,
+          showing: versions.length,
           versions,
         },
       };
@@ -224,6 +232,73 @@ export const packageTools = [
     }),
     handler: async (input: { name: string }) => {
       return registryGet<Record<string, string>>(`/-/package/${encPkg(input.name)}/dist-tags`);
+    },
+  },
+  {
+    name: "npm_types",
+    description:
+      "Check TypeScript type support for a package — whether it ships built-in types (types/typings field) or has a DefinitelyTyped companion (@types/* package).",
+    annotations: {
+      title: "Check TypeScript types",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: z.object({
+      name: z.string().describe("Package name (e.g. 'express' or '@anthropic-ai/sdk')"),
+      version: z.string().optional().describe("Semver version or dist-tag (default: 'latest')"),
+    }),
+    handler: async (input: { name: string; version?: string }) => {
+      const ver = input.version ?? "latest";
+
+      // Derive the @types package name:
+      // "express" -> "@types/express"
+      // "@scope/name" -> "@types/scope__name"
+      let typesPackage: string;
+      if (input.name.startsWith("@")) {
+        const withoutAt = input.name.slice(1); // "scope/name"
+        typesPackage = `@types/${withoutAt.replace("/", "__")}`;
+      } else {
+        typesPackage = `@types/${input.name}`;
+      }
+
+      // Check built-in types and @types/* in parallel
+      const [versionRes, typesRes] = await Promise.all([
+        registryGet<VersionDoc>(`/${encPkg(input.name)}/${ver}`),
+        registryGet<Packument>(`/${encPkg(typesPackage)}`),
+      ]);
+
+      if (!versionRes.ok) return versionRes;
+
+      const v = versionRes.data!;
+      const hasBuiltinTypes = !!(v.types || v.typings);
+      const typesEntry = hasBuiltinTypes ? (v.types ?? v.typings) : undefined;
+
+      const hasTypesPackage = typesRes.ok;
+      const typesPackageLatest = hasTypesPackage ? typesRes.data?.["dist-tags"]?.latest : undefined;
+
+      let recommendation: string;
+      if (hasBuiltinTypes) {
+        recommendation = "Built-in types included — no additional install needed.";
+      } else if (hasTypesPackage) {
+        recommendation = `Install types separately: npm install -D ${typesPackage}`;
+      } else {
+        recommendation = "No TypeScript types available (built-in or @types).";
+      }
+
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          name: v.name,
+          version: v.version,
+          builtinTypes: hasBuiltinTypes,
+          typesEntry,
+          typesPackage: hasTypesPackage ? { name: typesPackage, latest: typesPackageLatest } : null,
+          recommendation,
+        },
+      };
     },
   },
 ] as const;

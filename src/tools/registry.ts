@@ -22,7 +22,8 @@ export const registryTools = [
   },
   {
     name: "npm_recent_changes",
-    description: "Get the most recent package publishes/updates from the npm registry via the CouchDB changes feed.",
+    description:
+      "Get the most recent package publishes/updates from the npm registry via the CouchDB changes feed. Note: uses replicate.npmjs.com which may have intermittent availability.",
     annotations: {
       title: "Recent registry changes",
       readOnlyHint: true,
@@ -36,19 +37,20 @@ export const registryTools = [
     handler: async (input: { limit?: number }) => {
       const limit = input.limit ?? 25;
 
-      const dbRes = await replicateGet<{ update_seq: number; doc_count: number }>("/");
-      if (!dbRes.ok) return dbRes;
-
-      const since = dbRes.data!.update_seq - limit;
-      const changesRes = await replicateGet<{
-        results: Array<{ seq: number; id: string; changes: Array<{ rev: string }> }>;
-      }>(`/_changes?since=${since}&limit=${limit}&descending=false`);
+      // Fetch db info and recent changes in parallel.
+      // Use descending=true to get the most recent changes without relying on
+      // update_seq arithmetic (update_seq is an opaque string in CouchDB 2.x+).
+      const [dbRes, changesRes] = await Promise.all([
+        replicateGet<{ doc_count: number }>("/"),
+        replicateGet<{
+          results: Array<{ seq: unknown; id: string; changes: Array<{ rev: string }> }>;
+        }>(`/_changes?limit=${limit}&descending=true`),
+      ]);
 
       if (!changesRes.ok) return changesRes;
 
       const changes = changesRes.data!.results.map((r) => ({
         package: r.id,
-        seq: r.seq,
         rev: r.changes[0]?.rev,
       }));
 
@@ -56,7 +58,7 @@ export const registryTools = [
         ok: true,
         status: 200,
         data: {
-          totalPackages: dbRes.data!.doc_count,
+          totalPackages: dbRes.ok ? dbRes.data!.doc_count : null,
           changes,
         },
       };

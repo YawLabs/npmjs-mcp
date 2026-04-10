@@ -7,13 +7,13 @@ import { analysisTools } from "./tools/analysis.js";
 import { authTools } from "./tools/auth.js";
 import { dependencyTools } from "./tools/dependencies.js";
 import { downloadTools } from "./tools/downloads.js";
-import { hookTools } from "./tools/hooks.js";
 import { orgTools } from "./tools/orgs.js";
 import { packageTools } from "./tools/packages.js";
 import { provenanceTools } from "./tools/provenance.js";
 import { registryTools } from "./tools/registry.js";
 import { searchTools } from "./tools/search.js";
 import { securityTools } from "./tools/security.js";
+import { trustTools } from "./tools/trust.js";
 import { workflowTools } from "./tools/workflows.js";
 
 // Injected at build time by esbuild; falls back to reading package.json for tsc builds.
@@ -46,7 +46,7 @@ const allTools = [
   ...orgTools,
   ...accessTools,
   ...provenanceTools,
-  ...hookTools,
+  ...trustTools,
   ...workflowTools,
 ];
 

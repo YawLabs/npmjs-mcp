@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { type ApiResponse, encPkg, registryGet, registryGetAbbreviated } from "../api.js";
+import { type ApiResponse, encPkg, maxSatisfying, registryGet, registryGetAbbreviated } from "../api.js";
 
 interface AbbreviatedPackument {
   name: string;
@@ -126,14 +126,17 @@ export const dependencyTools = [
           packumentCache.set(name, pkg);
         }
 
-        // Resolve to latest if we got a range/tag
+        // Resolve version hint to an actual version
         let resolvedVersion: string;
         if (pkg.versions[versionHint]) {
           resolvedVersion = versionHint;
         } else if (pkg["dist-tags"][versionHint]) {
           resolvedVersion = pkg["dist-tags"][versionHint];
         } else {
-          resolvedVersion = pkg["dist-tags"]?.latest ?? versionHint;
+          // Try semver range resolution against available versions
+          const available = Object.keys(pkg.versions);
+          const matched = maxSatisfying(available, versionHint);
+          resolvedVersion = matched ?? pkg["dist-tags"]?.latest ?? versionHint;
         }
 
         // Deduplicate on resolved version (different ranges may resolve to the same version)
@@ -155,13 +158,17 @@ export const dependencyTools = [
         }
       }
 
-      await resolve(input.name, input.version ?? "latest", 1);
+      const versionHint = input.version ?? "latest";
+      await resolve(input.name, versionHint, 1);
+
+      // Find the actual resolved root key in the tree
+      const rootKey = Object.keys(tree).find((k) => k.startsWith(`${input.name}@`)) ?? `${input.name}@${versionHint}`;
 
       return {
         ok: true,
         status: 200,
         data: {
-          root: `${input.name}@${input.version ?? "latest"}`,
+          root: rootKey,
           depth: maxDepth,
           totalPackages: Object.keys(tree).length,
           tree,
@@ -197,9 +204,11 @@ export const dependencyTools = [
       if (!res.ok) return res;
 
       const pkg = res.data!;
-      const deps = Object.keys(pkg.dependencies ?? {});
+      const depEntries = Object.entries(pkg.dependencies ?? {});
 
-      // Fetch license info for direct deps with concurrency limit
+      // Fetch license info for direct deps with concurrency limit.
+      // Uses abbreviated packument to resolve the version range, then fetches
+      // the specific version doc for the license (not just "latest").
       const MAX_CONCURRENT = 10;
       let active = 0;
       const queue: Array<() => void> = [];
@@ -220,11 +229,22 @@ export const dependencyTools = [
       }
 
       const depLicenses = await Promise.all(
-        deps.map(async (depName) => {
-          const depRes = await runLimited(() => registryGet<VersionDoc>(`/${encPkg(depName)}/latest`));
+        depEntries.map(async ([depName, depRange]) => {
+          // Resolve the version range to find the correct version
+          const abbrevRes = await runLimited(() => registryGetAbbreviated<AbbreviatedPackument>(`/${encPkg(depName)}`));
+          if (!abbrevRes.ok) return { name: depName, version: depRange, license: "FETCH_ERROR" };
+
+          const abbrev = abbrevRes.data!;
+          const available = Object.keys(abbrev.versions);
+          const resolved = maxSatisfying(available, depRange) ?? abbrev["dist-tags"]?.latest;
+          if (!resolved) return { name: depName, version: depRange, license: "UNKNOWN" };
+
+          // Fetch the specific version doc for its license
+          const verRes = await runLimited(() => registryGet<VersionDoc>(`/${encPkg(depName)}/${resolved}`));
           return {
             name: depName,
-            license: depRes.ok ? (depRes.data?.license ?? "UNKNOWN") : "FETCH_ERROR",
+            version: resolved,
+            license: verRes.ok ? (verRes.data?.license ?? "UNKNOWN") : "FETCH_ERROR",
           };
         }),
       );
@@ -233,10 +253,7 @@ export const dependencyTools = [
         input.allowed ?? ["MIT", "ISC", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "0BSD", "Unlicense"],
       );
 
-      const results = [
-        { name: pkg.name, version: pkg.version, license: pkg.license ?? "UNKNOWN" },
-        ...depLicenses.map((d) => ({ name: d.name, version: "latest", license: d.license })),
-      ];
+      const results = [{ name: pkg.name, version: pkg.version, license: pkg.license ?? "UNKNOWN" }, ...depLicenses];
 
       const flagged = results.filter((r) => !allowedSet.has(r.license));
 

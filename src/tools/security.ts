@@ -5,7 +5,8 @@ export const securityTools = [
   {
     name: "npm_audit",
     description:
-      "Check specific packages and versions for known vulnerabilities. Returns advisories with severity, CVEs, and patched versions.",
+      "Quick vulnerability check for specific packages and versions using the bulk advisory API. Returns matching advisories with severity, CVEs, and patched versions. " +
+      "For richer detail (CVSS scores, CWEs, fix recommendations), use npm_audit_deep instead.",
     annotations: {
       title: "Audit packages",
       readOnlyHint: true,
@@ -25,7 +26,9 @@ export const securityTools = [
   {
     name: "npm_audit_deep",
     description:
-      "Run a full security audit on a set of dependencies. Returns detailed advisories with CVSS scores, CWEs, fix recommendations, and vulnerability metadata.",
+      "Full security audit on a dependency set — returns detailed advisories with CVSS scores, CWEs, affected version ranges, fix recommendations, and full vulnerability metadata. " +
+      "Uses the npm audit v1 endpoint which provides richer detail than the bulk advisory API (npm_audit). " +
+      "Requires you to provide the dependency map (use npm_dependencies to get it first).",
     annotations: {
       title: "Deep security audit",
       readOnlyHint: true,

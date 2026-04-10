@@ -126,13 +126,47 @@ export const authTools = [
         data: {
           total: data.total,
           tokens: data.objects.map((t) => ({
-            token: t.token,
             key: t.key,
             readonly: t.readonly,
             cidrWhitelist: t.cidr_whitelist,
             created: t.created,
             updated: t.updated,
           })),
+        },
+      };
+    },
+  },
+  {
+    name: "npm_user_packages",
+    description:
+      "List all packages published by a specific npm user. Shows package names and the user's access level for each. Requires authentication.",
+    annotations: {
+      title: "List user packages",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: z.object({
+      username: z.string().describe("npm username"),
+    }),
+    handler: async (input: { username: string }) => {
+      const authErr = requireAuth();
+      if (authErr) return authErr;
+
+      const res = await registryGetAuth<Record<string, string>>(
+        `/-/user/org.couchdb.user:${encodeURIComponent(input.username)}/package`,
+      );
+      if (!res.ok) return res;
+
+      const packages = Object.entries(res.data!).map(([name, access]) => ({ name, access }));
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          username: input.username,
+          packageCount: packages.length,
+          packages,
         },
       };
     },

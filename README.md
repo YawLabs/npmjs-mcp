@@ -65,7 +65,7 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
-## Tools (35)
+## Tools (37)
 
 ### Search
 - `npm_search` — Search the npm registry with qualifiers (keywords, author, scope)
@@ -76,6 +76,7 @@ Add to `claude_desktop_config.json`:
 - `npm_versions` — List all published versions with dates
 - `npm_readme` — Get README content
 - `npm_dist_tags` — Get dist-tags (latest, next, beta, etc)
+- `npm_types` — Check TypeScript type support (built-in types or @types/*)
 
 ### Dependencies
 - `npm_dependencies` — Get dependency lists (prod, dev, peer, optional)
@@ -106,10 +107,14 @@ Add to `claude_desktop_config.json`:
 ### Provenance
 - `npm_provenance` — Get Sigstore provenance attestations (SLSA, publish)
 
+### Trusted Publishers (requires NPM_TOKEN)
+- `npm_trusted_publishers` — List OIDC trust relationships with CI/CD providers
+
 ### Auth (requires NPM_TOKEN)
 - `npm_whoami` — Check authenticated user
 - `npm_profile` — Get profile, email, 2FA status
 - `npm_tokens` — List access tokens
+- `npm_user_packages` — List packages published by a user
 
 ### Access (requires NPM_TOKEN)
 - `npm_collaborators` — List package collaborators and permissions
@@ -121,16 +126,13 @@ Add to `claude_desktop_config.json`:
 - `npm_org_teams` — List org teams
 - `npm_team_packages` — List team package permissions
 
-### Hooks (requires NPM_TOKEN)
-- `npm_hooks` — List npm webhooks
-
 ### Workflows
 - `npm_check_auth` — Auth health check with headless publish feasibility
 - `npm_publish_preflight` — Pre-publish validation checklist
 
 ## Features
 
-- **35 tools** covering search, packages, deps, downloads, security, analysis, auth, orgs, provenance, and publish workflows
+- **37 tools** covering search, packages, deps, downloads, security, analysis, auth, orgs, provenance, trust, and publish workflows
 - **No API key required** for read-only tools — authenticated tools opt-in via NPM_TOKEN
 - **Zero runtime dependencies** — Single bundled file for instant `npx` startup
 - **Agent-aware publish tools** — Detects non-interactive context, provides human hand-off actions instead of unworkable retries

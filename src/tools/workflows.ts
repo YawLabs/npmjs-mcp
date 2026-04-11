@@ -1,11 +1,6 @@
 import { z } from "zod";
 import { type ApiResponse, encPkg, isAuthenticated, registryGet, registryGetAuth } from "../api.js";
-
-interface Packument {
-  name: string;
-  maintainers?: Array<{ name: string; email?: string }>;
-  "dist-tags"?: Record<string, string>;
-}
+import type { Packument } from "../types.js";
 
 interface TokenObject {
   token: string;

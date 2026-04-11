@@ -1,18 +1,6 @@
 import { z } from "zod";
 import { type ApiResponse, downloadsGet, encPkg, registryGet, registryPost } from "../api.js";
-
-interface Packument {
-  name: string;
-  description?: string;
-  "dist-tags": Record<string, string>;
-  versions: Record<string, { version: string; license?: string; deprecated?: string; _npmUser?: { name: string } }>;
-  time: Record<string, string>;
-  maintainers: Array<{ name: string; email?: string }>;
-  license?: string;
-  repository?: { type?: string; url?: string } | string;
-  homepage?: string;
-  readme?: string;
-}
+import type { Packument } from "../types.js";
 
 interface DownloadPoint {
   downloads: number;

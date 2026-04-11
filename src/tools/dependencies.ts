@@ -1,31 +1,6 @@
 import { z } from "zod";
-import { type ApiResponse, encPkg, maxSatisfying, registryGet, registryGetAbbreviated } from "../api.js";
-
-interface AbbreviatedPackument {
-  name: string;
-  "dist-tags": Record<string, string>;
-  versions: Record<
-    string,
-    {
-      name: string;
-      version: string;
-      dependencies?: Record<string, string>;
-      devDependencies?: Record<string, string>;
-      peerDependencies?: Record<string, string>;
-      optionalDependencies?: Record<string, string>;
-    }
-  >;
-}
-
-interface VersionDoc {
-  name: string;
-  version: string;
-  dependencies?: Record<string, string>;
-  devDependencies?: Record<string, string>;
-  peerDependencies?: Record<string, string>;
-  optionalDependencies?: Record<string, string>;
-  license?: string;
-}
+import { type ApiResponse, createLimiter, encPkg, maxSatisfying, registryGet, registryGetAbbreviated } from "../api.js";
+import type { AbbreviatedPackument, VersionDoc } from "../types.js";
 
 export const dependencyTools = [
   {
@@ -83,30 +58,11 @@ export const dependencyTools = [
     }),
     handler: async (input: { name: string; version?: string; depth?: number }) => {
       const maxDepth = input.depth ?? 3;
-      const MAX_CONCURRENT = 10;
+      const runLimited = createLimiter(10);
       const packumentCache = new Map<string, AbbreviatedPackument>(); // pkg name -> packument
       const resolved = new Set<string>(); // "name@hint" keys already queued
       const tree: Record<string, { version: string; dependencies: Record<string, string> }> = {};
       const warnings: string[] = [];
-
-      // Simple concurrency limiter
-      let active = 0;
-      const queue: Array<() => void> = [];
-      function runLimited<T>(fn: () => Promise<T>): Promise<T> {
-        return new Promise<T>((resolve, reject) => {
-          const run = () => {
-            active++;
-            fn()
-              .then(resolve, reject)
-              .finally(() => {
-                active--;
-                if (queue.length > 0) queue.shift()!();
-              });
-          };
-          if (active < MAX_CONCURRENT) run();
-          else queue.push(run);
-        });
-      }
 
       async function resolve(name: string, versionHint: string, currentDepth: number): Promise<void> {
         const hintKey = `${name}@${versionHint}`;
@@ -209,24 +165,7 @@ export const dependencyTools = [
       // Fetch license info for direct deps with concurrency limit.
       // Uses abbreviated packument to resolve the version range, then fetches
       // the specific version doc for the license (not just "latest").
-      const MAX_CONCURRENT = 10;
-      let active = 0;
-      const queue: Array<() => void> = [];
-      function runLimited<T>(fn: () => Promise<T>): Promise<T> {
-        return new Promise<T>((resolve, reject) => {
-          const run = () => {
-            active++;
-            fn()
-              .then(resolve, reject)
-              .finally(() => {
-                active--;
-                if (queue.length > 0) queue.shift()!();
-              });
-          };
-          if (active < MAX_CONCURRENT) run();
-          else queue.push(run);
-        });
-      }
+      const runLimited = createLimiter(10);
 
       const depLicenses = await Promise.all(
         depEntries.map(async ([depName, depRange]) => {

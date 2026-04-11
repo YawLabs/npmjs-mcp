@@ -1,52 +1,6 @@
 import { z } from "zod";
 import { encPkg, registryGet } from "../api.js";
-
-interface Packument {
-  _id: string;
-  name: string;
-  description?: string;
-  "dist-tags": Record<string, string>;
-  versions: Record<string, VersionDoc>;
-  time: Record<string, string>;
-  maintainers: Array<{ name: string; email?: string }>;
-  author?: { name?: string; email?: string; url?: string } | string;
-  license?: string;
-  homepage?: string;
-  repository?: { type?: string; url?: string } | string;
-  bugs?: { url?: string } | string;
-  keywords?: string[];
-  readme?: string;
-}
-
-interface VersionDoc {
-  name: string;
-  version: string;
-  description?: string;
-  dependencies?: Record<string, string>;
-  devDependencies?: Record<string, string>;
-  peerDependencies?: Record<string, string>;
-  optionalDependencies?: Record<string, string>;
-  engines?: Record<string, string>;
-  license?: string;
-  author?: { name?: string; email?: string; url?: string } | string;
-  maintainers?: Array<{ name: string; email?: string }>;
-  repository?: { type?: string; url?: string } | string;
-  homepage?: string;
-  bugs?: { url?: string } | string;
-  keywords?: string[];
-  dist: {
-    shasum: string;
-    tarball: string;
-    integrity?: string;
-    fileCount?: number;
-    unpackedSize?: number;
-    signatures?: Array<{ sig: string; keyid: string }>;
-  };
-  deprecated?: string;
-  types?: string;
-  typings?: string;
-  _npmUser?: { name: string; email?: string };
-}
+import type { Packument, VersionDoc } from "../types.js";
 
 export const packageTools = [
   {

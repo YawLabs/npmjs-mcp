@@ -148,16 +148,41 @@ export function replicateGet<T = unknown>(path: string): Promise<ApiResponse<T>>
   return request<T>(REPLICATE_URL, path);
 }
 
+// ─── Concurrency limiter ───
+
+/** Create a concurrency limiter that runs at most `max` tasks simultaneously. */
+export function createLimiter(max: number) {
+  let active = 0;
+  const queue: Array<() => void> = [];
+  return function runLimited<T>(fn: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const run = () => {
+        active++;
+        fn()
+          .then(resolve, reject)
+          .finally(() => {
+            active--;
+            if (queue.length > 0) queue.shift()!();
+          });
+      };
+      if (active < max) run();
+      else queue.push(run);
+    });
+  };
+}
+
 // ─── Semver helpers (lightweight, no external deps) ───
 
+type SemVer = [number, number, number];
+
 /** Parse a semver string into [major, minor, patch]. Returns null if unparseable. */
-function parseSemver(v: string): [number, number, number] | null {
+function parseSemver(v: string): SemVer | null {
   const m = v.match(/^(\d+)\.(\d+)\.(\d+)/);
   return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
 }
 
 /** Compare two semver tuples: -1 if a<b, 0 if equal, 1 if a>b. */
-function cmpSemver(a: [number, number, number], b: [number, number, number]): number {
+function cmpSemver(a: SemVer, b: SemVer): number {
   for (let i = 0; i < 3; i++) {
     if (a[i] < b[i]) return -1;
     if (a[i] > b[i]) return 1;
@@ -165,9 +190,125 @@ function cmpSemver(a: [number, number, number], b: [number, number, number]): nu
   return 0;
 }
 
+interface SemverRange {
+  min: SemVer | null; // inclusive lower bound
+  max: SemVer | null; // exclusive upper bound
+}
+
+/** Parse a single comparator (^, ~, >=, >, <=, <, =, x-range) into a range. */
+function parseSingleConstraint(r: string): SemverRange | null {
+  if (r === "*" || r === "") {
+    return { min: null, max: null };
+  }
+
+  if (r.startsWith("^")) {
+    const base = parseSemver(r.slice(1));
+    if (!base) return null;
+    let max: SemVer;
+    // ^1.2.3 -> <2.0.0; ^0.2.3 -> <0.3.0; ^0.0.3 -> <0.0.4
+    if (base[0] > 0) max = [base[0] + 1, 0, 0];
+    else if (base[1] > 0) max = [0, base[1] + 1, 0];
+    else max = [0, 0, base[2] + 1];
+    return { min: base, max };
+  }
+
+  if (r.startsWith("~")) {
+    const base = parseSemver(r.slice(1));
+    if (!base) return null;
+    // ~1.2.3 -> <1.3.0
+    return { min: base, max: [base[0], base[1] + 1, 0] };
+  }
+
+  if (r.startsWith(">=")) {
+    const base = parseSemver(r.slice(2));
+    if (!base) return null;
+    return { min: base, max: null };
+  }
+
+  if (r.startsWith(">")) {
+    // >1.2.3 → >=1.2.4 (safe for non-prerelease versions, which is all we match)
+    const base = parseSemver(r.slice(1));
+    if (!base) return null;
+    return { min: [base[0], base[1], base[2] + 1], max: null };
+  }
+
+  if (r.startsWith("<=")) {
+    const base = parseSemver(r.slice(2));
+    if (!base) return null;
+    return { min: null, max: [base[0], base[1], base[2] + 1] };
+  }
+
+  if (r.startsWith("<")) {
+    const base = parseSemver(r.slice(1));
+    if (!base) return null;
+    return { min: null, max: base };
+  }
+
+  if (r.startsWith("=")) {
+    const base = parseSemver(r.slice(1));
+    if (!base) return null;
+    return { min: base, max: [base[0], base[1], base[2] + 1] };
+  }
+
+  // x-ranges: 1.x, 1.2.x, 1, 1.2
+  const xm = r.match(/^(\d+)(?:\.(\d+|x|\*)(?:\.(\d+|x|\*))?)?$/);
+  if (xm) {
+    const major = Number(xm[1]);
+    const minor = xm[2] !== undefined && xm[2] !== "x" && xm[2] !== "*" ? Number(xm[2]) : null;
+    if (minor === null) {
+      return { min: [major, 0, 0], max: [major + 1, 0, 0] };
+    }
+    const patch = xm[3] !== undefined && xm[3] !== "x" && xm[3] !== "*" ? Number(xm[3]) : null;
+    if (patch === null) {
+      return { min: [major, minor, 0], max: [major, minor + 1, 0] };
+    }
+    // Exact version — handled by the includes() check in maxSatisfying
+    return null;
+  }
+
+  return null;
+}
+
+/**
+ * Parse a range string (which may be a compound like ">=1.0.0 <2.0.0"
+ * or a hyphen range like "1.2.3 - 2.3.4") into a single SemverRange.
+ */
+function parseRange(r: string): SemverRange | null {
+  // Hyphen range: 1.2.3 - 2.3.4
+  const hyphenMatch = r.match(/^(\d+\.\d+\.\d+)\s+-\s+(\d+\.\d+\.\d+)$/);
+  if (hyphenMatch) {
+    const low = parseSemver(hyphenMatch[1]);
+    const high = parseSemver(hyphenMatch[2]);
+    if (low && high) return { min: low, max: [high[0], high[1], high[2] + 1] };
+    return null;
+  }
+
+  // Compound range: ">=1.0.0 <2.0.0" (multiple space-separated comparators)
+  const parts = r.trim().split(/\s+/);
+  if (parts.length > 1) {
+    let min: SemVer | null = null;
+    let max: SemVer | null = null;
+    for (const part of parts) {
+      const constraint = parseSingleConstraint(part);
+      if (!constraint) return null;
+      if (constraint.min) {
+        if (!min || cmpSemver(constraint.min, min) > 0) min = constraint.min;
+      }
+      if (constraint.max) {
+        if (!max || cmpSemver(constraint.max, max) < 0) max = constraint.max;
+      }
+    }
+    return { min, max };
+  }
+
+  // Single constraint
+  return parseSingleConstraint(r.trim());
+}
+
 /**
  * Find the highest version from `versions` that satisfies `range`.
- * Handles ^, ~, >=, <=, exact, and x-ranges. Falls back to null if no match.
+ * Handles ^, ~, >=, >, <=, <, =, x-ranges, hyphen ranges (1.0.0 - 2.0.0),
+ * compound ranges (>=1.0.0 <2.0.0), and || unions. Falls back to null if no match.
  */
 export function maxSatisfying(versions: string[], range: string): string | null {
   // Strip leading whitespace/v prefix
@@ -176,68 +317,27 @@ export function maxSatisfying(versions: string[], range: string): string | null 
   // Exact version
   if (versions.includes(r)) return r;
 
-  let minInclusive: [number, number, number] | null = null;
-  let maxExclusive: [number, number, number] | null = null;
-
-  if (r.startsWith("^")) {
-    const base = parseSemver(r.slice(1));
-    if (!base) return null;
-    minInclusive = base;
-    // ^1.2.3 -> <2.0.0; ^0.2.3 -> <0.3.0; ^0.0.3 -> <0.0.4
-    if (base[0] > 0) maxExclusive = [base[0] + 1, 0, 0];
-    else if (base[1] > 0) maxExclusive = [0, base[1] + 1, 0];
-    else maxExclusive = [0, 0, base[2] + 1];
-  } else if (r.startsWith("~")) {
-    const base = parseSemver(r.slice(1));
-    if (!base) return null;
-    minInclusive = base;
-    // ~1.2.3 -> <1.3.0
-    maxExclusive = [base[0], base[1] + 1, 0];
-  } else if (r.startsWith(">=")) {
-    const base = parseSemver(r.slice(2));
-    if (!base) return null;
-    minInclusive = base;
-  } else if (r.startsWith("<=")) {
-    const base = parseSemver(r.slice(2));
-    if (!base) return null;
-    maxExclusive = [base[0], base[1], base[2] + 1]; // inclusive upper
-  } else {
-    // Try x-ranges: 1.x, 1.2.x, 1, 1.2
-    const xm = r.match(/^(\d+)(?:\.(\d+|x)(?:\.(\d+|x))?)?$/);
-    if (xm) {
-      const major = Number(xm[1]);
-      const minor = xm[2] !== undefined && xm[2] !== "x" ? Number(xm[2]) : null;
-      if (minor === null) {
-        minInclusive = [major, 0, 0];
-        maxExclusive = [major + 1, 0, 0];
-      } else {
-        const patch = xm[3] !== undefined && xm[3] !== "x" ? Number(xm[3]) : null;
-        if (patch === null) {
-          minInclusive = [major, minor, 0];
-          maxExclusive = [major, minor + 1, 0];
-        } else {
-          // Exact version already handled above
-          return null;
-        }
-      }
-    } else {
-      return null;
-    }
-  }
+  // Split on || for union ranges, find best across all sub-ranges
+  const subRanges = r.split("||").map((s) => s.trim());
 
   let best: string | null = null;
-  let bestParsed: [number, number, number] | null = null;
+  let bestParsed: SemVer | null = null;
 
-  for (const v of versions) {
-    // Skip prereleases (e.g. 1.0.0-beta.1) unless range explicitly targets one
-    if (v.includes("-") && !r.includes("-")) continue;
-    const parsed = parseSemver(v);
+  for (const sub of subRanges) {
+    const parsed = parseRange(sub);
     if (!parsed) continue;
-    if (minInclusive && cmpSemver(parsed, minInclusive) < 0) continue;
-    if (maxExclusive && cmpSemver(parsed, maxExclusive) >= 0) continue;
-    if (!bestParsed || cmpSemver(parsed, bestParsed) > 0) {
-      best = v;
-      bestParsed = parsed;
+
+    for (const v of versions) {
+      // Skip prereleases (e.g. 1.0.0-beta.1) unless range explicitly targets one
+      if (v.includes("-") && !sub.includes("-")) continue;
+      const vp = parseSemver(v);
+      if (!vp) continue;
+      if (parsed.min && cmpSemver(vp, parsed.min) < 0) continue;
+      if (parsed.max && cmpSemver(vp, parsed.max) >= 0) continue;
+      if (!bestParsed || cmpSemver(vp, bestParsed) > 0) {
+        best = v;
+        bestParsed = vp;
+      }
     }
   }
 

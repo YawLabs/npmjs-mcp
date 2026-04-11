@@ -1,6 +1,6 @@
 {
   "name": "@yawlabs/npmjs-mcp",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "npm registry MCP server — package intelligence, security audits, and dependency analysis for AI assistants",
   "license": "MIT",
   "author": "YawLabs <contact@yaw.sh>",

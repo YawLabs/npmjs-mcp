@@ -13,6 +13,7 @@ import { searchTools } from "./search.js";
 import { securityTools } from "./security.js";
 import { trustTools } from "./trust.js";
 import { workflowTools } from "./workflows.js";
+import { writeTools } from "./writes.js";
 
 const allTools = [
   ...searchTools,
@@ -28,6 +29,7 @@ const allTools = [
   ...provenanceTools,
   ...trustTools,
   ...workflowTools,
+  ...writeTools,
 ];
 
 describe("Tool definitions", () => {
@@ -42,7 +44,7 @@ describe("Tool definitions", () => {
   });
 
   it("should have the expected total tool count", () => {
-    assert.equal(allTools.length, 37);
+    assert.equal(allTools.length, 46);
   });
 
   for (const tool of allTools) {
@@ -76,9 +78,13 @@ describe("Tool definitions", () => {
         assert.equal(typeof tool.annotations.openWorldHint, "boolean", `Tool ${tool.name} missing openWorldHint`);
       });
 
-      it("should be read-only", () => {
-        assert.equal(tool.annotations.readOnlyHint, true, `Tool ${tool.name} should be readOnly`);
-        assert.equal(tool.annotations.destructiveHint, false, `Tool ${tool.name} should not be destructive`);
+      it("read-only vs destructive hints are consistent", () => {
+        // readOnlyHint and destructiveHint must be opposites.
+        assert.notEqual(
+          tool.annotations.readOnlyHint,
+          tool.annotations.destructiveHint,
+          `Tool ${tool.name} readOnlyHint (${tool.annotations.readOnlyHint}) and destructiveHint (${tool.annotations.destructiveHint}) must be opposites`,
+        );
       });
     });
   }
@@ -91,11 +97,12 @@ describe("Tool modules export correct counts", () => {
   it("downloadTools has 4 tools", () => assert.equal(downloadTools.length, 4));
   it("securityTools has 3 tools", () => assert.equal(securityTools.length, 3));
   it("analysisTools has 4 tools", () => assert.equal(analysisTools.length, 4));
-  it("registryTools has 2 tools", () => assert.equal(registryTools.length, 2));
-  it("authTools has 4 tools", () => assert.equal(authTools.length, 4));
+  it("registryTools has 3 tools", () => assert.equal(registryTools.length, 3));
+  it("authTools has 5 tools", () => assert.equal(authTools.length, 5));
   it("orgTools has 4 tools", () => assert.equal(orgTools.length, 4));
   it("accessTools has 2 tools", () => assert.equal(accessTools.length, 2));
   it("provenanceTools has 1 tool", () => assert.equal(provenanceTools.length, 1));
   it("trustTools has 1 tool", () => assert.equal(trustTools.length, 1));
   it("workflowTools has 2 tools", () => assert.equal(workflowTools.length, 2));
+  it("writeTools has 7 tools", () => assert.equal(writeTools.length, 7));
 });

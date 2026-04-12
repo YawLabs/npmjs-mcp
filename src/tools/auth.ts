@@ -137,6 +137,54 @@ export const authTools = [
     },
   },
   {
+    name: "npm_verify_token",
+    description:
+      "Verify the NPM_TOKEN and surface its capabilities — username, 2FA status, and whether " +
+      "writes are likely to succeed. Call this FIRST when debugging any write failure to rule " +
+      "out auth issues before trying other fixes. Faster than running writes and interpreting " +
+      "401/403 errors.",
+    annotations: {
+      title: "Verify token capabilities",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: z.object({}),
+    handler: async () => {
+      const authErr = requireAuth();
+      if (authErr) return authErr;
+
+      const [whoami, profile] = await Promise.all([
+        registryGetAuth<{ username: string }>("/-/whoami"),
+        registryGetAuth<UserProfile>("/-/npm/v1/user"),
+      ]);
+
+      if (!whoami.ok) {
+        return {
+          ...whoami,
+          error: `Token failed /-/whoami check. Token is invalid, expired, or revoked. Create a new one at https://www.npmjs.com/settings/~/tokens. Raw: ${whoami.error}`,
+        };
+      }
+
+      const tfa = profile.ok && profile.data?.tfa ? { enabled: true, mode: profile.data.tfa.mode } : { enabled: false };
+
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          username: whoami.data?.username,
+          tokenValid: true,
+          tfa,
+          hint:
+            "For write ops, token must have 'Read and write' scope on the target package. " +
+            "Granular Access Tokens require 2FA for writes; Classic Automation tokens bypass 2FA. " +
+            "Check your token's scope at https://www.npmjs.com/settings/~/tokens if writes return 401 or 403.",
+        },
+      };
+    },
+  },
+  {
     name: "npm_user_packages",
     description:
       "List all packages published by a specific npm user. Shows package names and the user's access level for each. Requires authentication.",

@@ -65,7 +65,7 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
-## Tools (37)
+## Tools (46)
 
 ### Search
 - `npm_search` — Search the npm registry with qualifiers (keywords, author, scope)
@@ -103,6 +103,7 @@ Add to `claude_desktop_config.json`:
 ### Registry
 - `npm_registry_stats` — Total npm-wide download counts
 - `npm_recent_changes` — Recent package publishes from the CouchDB changes feed
+- `npm_ops_playbook` — Canonical recipes for npm operations (call this FIRST when unsure which tool to use)
 
 ### Provenance
 - `npm_provenance` — Get Sigstore provenance attestations (SLSA, publish)
@@ -114,6 +115,7 @@ Add to `claude_desktop_config.json`:
 - `npm_whoami` — Check authenticated user
 - `npm_profile` — Get profile, email, 2FA status
 - `npm_tokens` — List access tokens
+- `npm_verify_token` — One-call capability check (call this FIRST when debugging write failures)
 - `npm_user_packages` — List packages published by a user
 
 ### Access (requires NPM_TOKEN)
@@ -129,6 +131,30 @@ Add to `claude_desktop_config.json`:
 ### Workflows
 - `npm_check_auth` — Auth health check with headless publish feasibility
 - `npm_publish_preflight` — Pre-publish validation checklist
+
+### Write Operations (requires NPM_TOKEN with write scope)
+
+These bypass the CLI/2FA friction that causes `npm deprecate` and similar commands to 422 locally. All use the HTTP API with your `NPM_TOKEN`.
+
+- `npm_deprecate` — Deprecate a package or specific versions (validates message format)
+- `npm_undeprecate` — Clear deprecation
+- `npm_unpublish_version` — Unpublish a specific version (requires `confirm: true`)
+- `npm_dist_tag_set` — Point a dist-tag at a version
+- `npm_dist_tag_remove` — Remove a dist-tag (except `latest`)
+- `npm_owner_add` — Add a maintainer
+- `npm_owner_remove` — Remove a maintainer (prevents lockout)
+
+### Operation Decision Matrix
+
+| Operation | Preferred path | Why |
+|---|---|---|
+| Read (search/view/stats) | These MCP tools, no auth required | Fast, zero friction |
+| Deprecate / dist-tag / owner | `npm_deprecate`, `npm_dist_tag_*`, `npm_owner_*` | HTTP API, no CLI auth issues |
+| Publish | CI tag-push workflow | Version discipline, provenance, org token |
+| Unpublish | `npm_unpublish_version` (with `confirm: true`) | Safer than CLI; irreversible within 72h |
+| CLI fallback (only if MCP returns 422) | `npm login --auth-type=web` then `npm <op>` | End-user interactive path |
+
+Call `npm_ops_playbook` at the start of any session for the up-to-date matrix.
 
 ## Features
 

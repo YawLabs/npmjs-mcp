@@ -15,6 +15,7 @@ import { searchTools } from "./tools/search.js";
 import { securityTools } from "./tools/security.js";
 import { trustTools } from "./tools/trust.js";
 import { workflowTools } from "./tools/workflows.js";
+import { writeTools } from "./tools/writes.js";
 
 // Injected at build time by esbuild; falls back to reading package.json for tsc builds.
 declare const __VERSION__: string | undefined;
@@ -48,6 +49,7 @@ const allTools = [
   ...provenanceTools,
   ...trustTools,
   ...workflowTools,
+  ...writeTools,
 ];
 
 const server = new McpServer({

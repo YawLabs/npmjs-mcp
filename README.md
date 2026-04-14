@@ -65,7 +65,7 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
-## Tools (46)
+## Tools (63)
 
 ### Search
 - `npm_search` — Search the npm registry with qualifiers (keywords, author, scope)
@@ -139,10 +139,25 @@ These bypass the CLI/2FA friction that causes `npm deprecate` and similar comman
 - `npm_deprecate` — Deprecate a package or specific versions (validates message format)
 - `npm_undeprecate` — Clear deprecation
 - `npm_unpublish_version` — Unpublish a specific version (requires `confirm: true`)
+- `npm_unpublish_package` — Unpublish an entire package (requires `confirm: true`)
 - `npm_dist_tag_set` — Point a dist-tag at a version
 - `npm_dist_tag_remove` — Remove a dist-tag (except `latest`)
-- `npm_owner_add` — Add a maintainer
+- `npm_owner_add` — Add a maintainer (resolves user via `/-/user/`)
 - `npm_owner_remove` — Remove a maintainer (prevents lockout)
+- `npm_access_set` — Set public/private/restricted access
+- `npm_access_set_mfa` — Configure 2FA requirement for publish (none/publish/automation)
+- `npm_team_grant` / `npm_team_revoke` — Grant/revoke team permissions on a package
+- `npm_team_create` / `npm_team_delete` — Create/delete a team in an org
+- `npm_team_member_add` / `npm_team_member_remove` — Manage team members
+- `npm_org_member_set` / `npm_org_member_remove` — Add/remove org members, set roles
+- `npm_token_revoke` — Revoke an access token by key (creation requires a password and isn't exposed)
+
+### Webhooks (requires NPM_TOKEN)
+- `npm_hook_add` — Register a webhook on a package, scope, or user
+- `npm_hook_list` — List webhooks (optional package filter)
+- `npm_hook_get` — Fetch a single webhook
+- `npm_hook_update` — Update endpoint/secret of a webhook
+- `npm_hook_remove` — Delete a webhook
 
 ### Operation Decision Matrix
 
@@ -158,7 +173,7 @@ Call `npm_ops_playbook` at the start of any session for the up-to-date matrix.
 
 ## Features
 
-- **37 tools** covering search, packages, deps, downloads, security, analysis, auth, orgs, provenance, trust, and publish workflows
+- **63 tools** covering search, packages, deps, downloads, security, analysis, auth, orgs, access, provenance, trust, publish workflows, write operations, and registry webhooks
 - **No API key required** for read-only tools — authenticated tools opt-in via NPM_TOKEN
 - **Zero runtime dependencies** — Single bundled file for instant `npx` startup
 - **Agent-aware publish tools** — Detects non-interactive context, provides human hand-off actions instead of unworkable retries

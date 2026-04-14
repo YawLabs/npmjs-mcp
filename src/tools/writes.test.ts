@@ -294,9 +294,22 @@ describe("npm_unpublish_version", () => {
     assert.match(result.error, /confirm: true/);
   });
 
-  it("unpublishes a specific version", async () => {
+  it("unpublishes a specific version: GET → PUT /-rev → GET → DELETE tarball", async () => {
+    const pkg = samplePackument({
+      versions: {
+        "0.1.0": {
+          name: "@test/pkg",
+          version: "0.1.0",
+          dist: { tarball: "https://registry.npmjs.org/@test/pkg/-/pkg-0.1.0.tgz" },
+        },
+        "0.2.0": { name: "@test/pkg", version: "0.2.0" },
+        "1.0.0": { name: "@test/pkg", version: "1.0.0" },
+      },
+    });
     mockFetchSequence([
-      { status: 200, body: samplePackument() },
+      { status: 200, body: pkg },
+      { status: 200, body: {} },
+      { status: 200, body: { ...pkg, _rev: "2-def" } },
       { status: 200, body: {} },
     ]);
     const tool = findTool(writeTools, "npm_unpublish_version");
@@ -304,10 +317,42 @@ describe("npm_unpublish_version", () => {
       name: "@test/pkg",
       version: "0.1.0",
       confirm: true,
-    })) as { ok: boolean; data: { remainingVersions: string[] } };
+    })) as { ok: boolean; data: { remainingVersions: string[]; tarballDeleted: boolean } };
     assert.equal(result.ok, true);
     assert.ok(!result.data.remainingVersions.includes("0.1.0"));
     assert.equal(result.data.remainingVersions.length, 2);
+    assert.equal(result.data.tarballDeleted, true);
+    // PUT to /-rev/1-abc
+    assert.equal(requests[1].method, "PUT");
+    assert.match(requests[1].url, /\/-rev\/1-abc$/);
+    // DELETE tarball with fresh rev
+    assert.equal(requests[3].method, "DELETE");
+    assert.match(requests[3].url, /\/@test\/pkg\/-\/pkg-0\.1\.0\.tgz\/-rev\/2-def$/);
+  });
+
+  it("resets dist-tags.latest when removing the version it pointed at", async () => {
+    const pkg = samplePackument({
+      "dist-tags": { latest: "1.0.0" },
+      versions: {
+        "0.1.0": { name: "@test/pkg", version: "0.1.0" },
+        "0.2.0": { name: "@test/pkg", version: "0.2.0" },
+        "1.0.0": {
+          name: "@test/pkg",
+          version: "1.0.0",
+          dist: { tarball: "https://registry.npmjs.org/@test/pkg/-/pkg-1.0.0.tgz" },
+        },
+      },
+    });
+    mockFetchSequence([
+      { status: 200, body: pkg },
+      { status: 200, body: {} },
+      { status: 200, body: { ...pkg, _rev: "2-def" } },
+      { status: 200, body: {} },
+    ]);
+    const tool = findTool(writeTools, "npm_unpublish_version");
+    await tool.handler({ name: "@test/pkg", version: "1.0.0", confirm: true });
+    const putBody = requests[1].body as { "dist-tags": Record<string, string> };
+    assert.equal(putBody["dist-tags"].latest, "0.2.0");
   });
 
   it("returns 404 for nonexistent version", async () => {
@@ -320,6 +365,195 @@ describe("npm_unpublish_version", () => {
     })) as { ok: boolean; status: number };
     assert.equal(result.ok, false);
     assert.equal(result.status, 404);
+  });
+});
+
+// ─── npm_unpublish_package ───
+
+describe("npm_unpublish_package", () => {
+  it("DELETEs /{pkg}/-rev/{rev} after fetching rev", async () => {
+    mockFetchSequence([
+      { status: 200, body: samplePackument() },
+      { status: 200, body: {} },
+    ]);
+    const tool = findTool(writeTools, "npm_unpublish_package");
+    const result = (await tool.handler({ name: "@test/pkg", confirm: true })) as { ok: boolean };
+    assert.equal(result.ok, true);
+    assert.equal(requests[1].method, "DELETE");
+    assert.match(requests[1].url, /\/-rev\/1-abc$/);
+  });
+
+  it("requires confirm: true", async () => {
+    const tool = findTool(writeTools, "npm_unpublish_package");
+    // biome-ignore lint/suspicious/noExplicitAny: deliberately bypassing types to test runtime guard
+    const result = (await (tool.handler as any)({ name: "@test/pkg", confirm: false })) as {
+      ok: boolean;
+      status: number;
+    };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+  });
+});
+
+// ─── npm_access_set + npm_access_set_mfa ───
+
+describe("npm_access_set", () => {
+  it("POSTs to /-/package/<pkg>/access with access level", async () => {
+    mockFetch(200, {});
+    const tool = findTool(writeTools, "npm_access_set");
+    const result = (await tool.handler({ name: "@test/pkg", access: "private" })) as { ok: boolean };
+    assert.equal(result.ok, true);
+    assert.equal(lastRequest!.method, "POST");
+    assert.match(lastRequest!.url, /\/-\/package\/@test%2Fpkg\/access$/);
+    assert.deepEqual(lastRequest!.body, { access: "private" });
+  });
+});
+
+describe("npm_access_set_mfa", () => {
+  it("publish-only MFA: publish_requires_tfa=true, automation_token_overrides_tfa=false", async () => {
+    mockFetch(200, {});
+    const tool = findTool(writeTools, "npm_access_set_mfa");
+    await tool.handler({ name: "@test/pkg", level: "publish" });
+    assert.deepEqual(lastRequest!.body, { publish_requires_tfa: true, automation_token_overrides_tfa: false });
+  });
+
+  it("automation level: both flags true", async () => {
+    mockFetch(200, {});
+    const tool = findTool(writeTools, "npm_access_set_mfa");
+    await tool.handler({ name: "@test/pkg", level: "automation" });
+    assert.deepEqual(lastRequest!.body, { publish_requires_tfa: true, automation_token_overrides_tfa: true });
+  });
+
+  it("none level: publish_requires_tfa=false", async () => {
+    mockFetch(200, {});
+    const tool = findTool(writeTools, "npm_access_set_mfa");
+    await tool.handler({ name: "@test/pkg", level: "none" });
+    assert.deepEqual(lastRequest!.body, { publish_requires_tfa: false });
+  });
+});
+
+// ─── team grant/revoke ───
+
+describe("npm_team_grant", () => {
+  it("PUTs to /-/team/<scope>/<team>/package with permissions body", async () => {
+    mockFetch(200, {});
+    const tool = findTool(writeTools, "npm_team_grant");
+    const result = (await tool.handler({
+      team: "@yawlabs:devs",
+      package: "@yawlabs/pkg",
+      permissions: "read-write",
+    })) as { ok: boolean };
+    assert.equal(result.ok, true);
+    assert.equal(lastRequest!.method, "PUT");
+    assert.match(lastRequest!.url, /\/-\/team\/yawlabs\/devs\/package$/);
+    assert.deepEqual(lastRequest!.body, { package: "@yawlabs/pkg", permissions: "read-write" });
+  });
+
+  it("rejects malformed team string", async () => {
+    const tool = findTool(writeTools, "npm_team_grant");
+    const result = (await tool.handler({
+      team: "no-colon-here",
+      package: "x",
+      permissions: "read-only",
+    })) as { ok: boolean; error: string };
+    assert.equal(result.ok, false);
+    assert.match(result.error, /@scope:team/);
+  });
+});
+
+describe("npm_team_revoke", () => {
+  it("DELETEs /-/team/<scope>/<team>/package with body", async () => {
+    mockFetch(200, {});
+    const tool = findTool(writeTools, "npm_team_revoke");
+    await tool.handler({ team: "@yawlabs:devs", package: "@yawlabs/pkg" });
+    assert.equal(lastRequest!.method, "DELETE");
+    assert.deepEqual(lastRequest!.body, { package: "@yawlabs/pkg" });
+  });
+});
+
+// ─── team create/delete + members ───
+
+describe("npm_team_create", () => {
+  it("PUTs /-/org/<scope>/team with name + description", async () => {
+    mockFetch(200, {});
+    const tool = findTool(writeTools, "npm_team_create");
+    await tool.handler({ team: "@yawlabs:devs", description: "dev team" });
+    assert.equal(lastRequest!.method, "PUT");
+    assert.match(lastRequest!.url, /\/-\/org\/yawlabs\/team$/);
+    assert.deepEqual(lastRequest!.body, { name: "devs", description: "dev team" });
+  });
+});
+
+describe("npm_team_delete", () => {
+  it("DELETEs /-/team/<scope>/<team>", async () => {
+    mockFetch(200, {});
+    const tool = findTool(writeTools, "npm_team_delete");
+    await tool.handler({ team: "@yawlabs:devs" });
+    assert.equal(lastRequest!.method, "DELETE");
+    assert.match(lastRequest!.url, /\/-\/team\/yawlabs\/devs$/);
+  });
+});
+
+describe("npm_team_member_add", () => {
+  it("PUTs /-/team/<scope>/<team>/user with user body", async () => {
+    mockFetch(200, {});
+    const tool = findTool(writeTools, "npm_team_member_add");
+    await tool.handler({ team: "@yawlabs:devs", user: "bob" });
+    assert.equal(lastRequest!.method, "PUT");
+    assert.match(lastRequest!.url, /\/-\/team\/yawlabs\/devs\/user$/);
+    assert.deepEqual(lastRequest!.body, { user: "bob" });
+  });
+});
+
+describe("npm_team_member_remove", () => {
+  it("DELETEs /-/team/<scope>/<team>/user with user body", async () => {
+    mockFetch(200, {});
+    const tool = findTool(writeTools, "npm_team_member_remove");
+    await tool.handler({ team: "@yawlabs:devs", user: "bob" });
+    assert.equal(lastRequest!.method, "DELETE");
+    assert.deepEqual(lastRequest!.body, { user: "bob" });
+  });
+});
+
+// ─── org member set/remove ───
+
+describe("npm_org_member_set", () => {
+  it("PUTs /-/org/<org>/user with user + role body", async () => {
+    mockFetch(200, {});
+    const tool = findTool(writeTools, "npm_org_member_set");
+    await tool.handler({ org: "@yawlabs", user: "bob", role: "developer" });
+    assert.equal(lastRequest!.method, "PUT");
+    assert.match(lastRequest!.url, /\/-\/org\/yawlabs\/user$/);
+    assert.deepEqual(lastRequest!.body, { user: "bob", role: "developer" });
+  });
+
+  it("strips leading @ from org and user", async () => {
+    mockFetch(200, {});
+    const tool = findTool(writeTools, "npm_org_member_set");
+    await tool.handler({ org: "yawlabs", user: "@bob" });
+    assert.deepEqual(lastRequest!.body, { user: "bob" });
+  });
+});
+
+describe("npm_org_member_remove", () => {
+  it("DELETEs /-/org/<org>/user with user body", async () => {
+    mockFetch(200, {});
+    const tool = findTool(writeTools, "npm_org_member_remove");
+    await tool.handler({ org: "yawlabs", user: "bob" });
+    assert.equal(lastRequest!.method, "DELETE");
+    assert.deepEqual(lastRequest!.body, { user: "bob" });
+  });
+});
+
+// ─── token revoke ───
+
+describe("npm_token_revoke", () => {
+  it("DELETEs /-/npm/v1/tokens/token/<key>", async () => {
+    mockFetch(200, {});
+    const tool = findTool(writeTools, "npm_token_revoke");
+    await tool.handler({ tokenKey: "abc-123" });
+    assert.equal(lastRequest!.method, "DELETE");
+    assert.match(lastRequest!.url, /\/-\/npm\/v1\/tokens\/token\/abc-123$/);
   });
 });
 
@@ -364,8 +598,9 @@ describe("npm_dist_tag_remove", () => {
 // ─── owner add/remove ───
 
 describe("npm_owner_add", () => {
-  it("adds a new maintainer", async () => {
+  it("adds a new maintainer (resolve user → fetch packument → PUT with rev)", async () => {
     mockFetchSequence([
+      { status: 200, body: { name: "bob", email: "bob@test.com" } },
       { status: 200, body: samplePackument() },
       { status: 200, body: {} },
     ]);
@@ -377,10 +612,18 @@ describe("npm_owner_add", () => {
     assert.equal(result.ok, true);
     assert.ok(result.data.maintainers.includes("bob"));
     assert.ok(result.data.maintainers.includes("alice"));
+    // PUT URL must include -rev/
+    const putReq = requests.find((r) => r.method === "PUT")!;
+    assert.match(putReq.url, /\/-rev\/1-abc$/);
+    // PUT body is the minimal maintainers doc, not the full packument
+    assert.deepEqual(Object.keys(putReq.body as object).sort(), ["_id", "_rev", "maintainers"]);
   });
 
-  it("is idempotent for existing maintainer", async () => {
-    mockFetchSequence([{ status: 200, body: samplePackument() }]);
+  it("is idempotent for existing maintainer (user resolve + packument fetch, no PUT)", async () => {
+    mockFetchSequence([
+      { status: 200, body: { name: "alice", email: "alice@test.com" } },
+      { status: 200, body: samplePackument() },
+    ]);
     const tool = findTool(writeTools, "npm_owner_add");
     const result = (await tool.handler({
       name: "@test/pkg",
@@ -388,8 +631,7 @@ describe("npm_owner_add", () => {
     })) as { ok: boolean; data: { alreadyOwner: boolean } };
     assert.equal(result.ok, true);
     assert.equal(result.data.alreadyOwner, true);
-    // No PUT request made
-    assert.equal(requests.length, 1);
+    assert.equal(requests.filter((r) => r.method === "PUT").length, 0);
   });
 });
 

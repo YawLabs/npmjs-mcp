@@ -5,6 +5,7 @@ import { analysisTools } from "./analysis.js";
 import { authTools } from "./auth.js";
 import { dependencyTools } from "./dependencies.js";
 import { downloadTools } from "./downloads.js";
+import { hookTools } from "./hooks.js";
 import { orgTools } from "./orgs.js";
 import { packageTools } from "./packages.js";
 import { provenanceTools } from "./provenance.js";
@@ -30,6 +31,7 @@ const allTools = [
   ...trustTools,
   ...workflowTools,
   ...writeTools,
+  ...hookTools,
 ];
 
 describe("Tool definitions", () => {
@@ -44,7 +46,7 @@ describe("Tool definitions", () => {
   });
 
   it("should have the expected total tool count", () => {
-    assert.equal(allTools.length, 46);
+    assert.equal(allTools.length, 63);
   });
 
   for (const tool of allTools) {
@@ -104,5 +106,6 @@ describe("Tool modules export correct counts", () => {
   it("provenanceTools has 1 tool", () => assert.equal(provenanceTools.length, 1));
   it("trustTools has 1 tool", () => assert.equal(trustTools.length, 1));
   it("workflowTools has 2 tools", () => assert.equal(workflowTools.length, 2));
-  it("writeTools has 7 tools", () => assert.equal(writeTools.length, 7));
+  it("writeTools has 19 tools", () => assert.equal(writeTools.length, 19));
+  it("hookTools has 5 tools", () => assert.equal(hookTools.length, 5));
 });

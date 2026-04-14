@@ -7,6 +7,7 @@ import { analysisTools } from "./tools/analysis.js";
 import { authTools } from "./tools/auth.js";
 import { dependencyTools } from "./tools/dependencies.js";
 import { downloadTools } from "./tools/downloads.js";
+import { hookTools } from "./tools/hooks.js";
 import { orgTools } from "./tools/orgs.js";
 import { packageTools } from "./tools/packages.js";
 import { provenanceTools } from "./tools/provenance.js";
@@ -50,6 +51,7 @@ const allTools = [
   ...trustTools,
   ...workflowTools,
   ...writeTools,
+  ...hookTools,
 ];
 
 const server = new McpServer({

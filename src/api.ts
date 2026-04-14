@@ -131,9 +131,9 @@ export function registryPutAuth<T = unknown>(path: string, body: unknown): Promi
   return request<T>(REGISTRY_URL, path, { method: "PUT", body, headers: authHeaders() });
 }
 
-/** DELETE with Bearer token. */
-export function registryDeleteAuth<T = unknown>(path: string): Promise<ApiResponse<T>> {
-  return request<T>(REGISTRY_URL, path, { method: "DELETE", headers: authHeaders() });
+/** DELETE with Bearer token. Optional body for team/org user removal. */
+export function registryDeleteAuth<T = unknown>(path: string, body?: unknown): Promise<ApiResponse<T>> {
+  return request<T>(REGISTRY_URL, path, { method: "DELETE", body, headers: authHeaders() });
 }
 
 // ─── Downloads API (api.npmjs.org) ───

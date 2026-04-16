@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { registryGet } from "../api.js";
+import { translateError } from "../errors.js";
 
 interface SearchResult {
   objects: Array<{
@@ -56,7 +57,7 @@ export const searchTools = [
       if (input.maintenance !== undefined) params.set("maintenance", String(input.maintenance));
 
       const res = await registryGet<SearchResult>(`/-/v1/search?${params}`);
-      if (!res.ok) return res;
+      if (!res.ok) return translateError(res, { op: `search "${input.query}"` });
 
       const results = res.data!.objects.map((obj) => ({
         name: obj.package.name,

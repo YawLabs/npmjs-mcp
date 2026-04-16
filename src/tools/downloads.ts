@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { downloadsGet, encPkg } from "../api.js";
+import { translateError } from "../errors.js";
 
 export const downloadTools = [
   {
@@ -22,7 +23,8 @@ export const downloadTools = [
     }),
     handler: async (input: { name: string; period?: string }) => {
       const period = input.period ?? "last-week";
-      return downloadsGet(`/downloads/point/${period}/${encPkg(input.name)}`);
+      const res = await downloadsGet(`/downloads/point/${period}/${encPkg(input.name)}`);
+      return res.ok ? res : translateError(res, { pkg: input.name, op: `downloads ${period}` });
     },
   },
   {
@@ -44,7 +46,8 @@ export const downloadTools = [
     }),
     handler: async (input: { name: string; period?: string }) => {
       const period = input.period ?? "last-month";
-      return downloadsGet(`/downloads/range/${period}/${encPkg(input.name)}`);
+      const res = await downloadsGet(`/downloads/range/${period}/${encPkg(input.name)}`);
+      return res.ok ? res : translateError(res, { pkg: input.name, op: `downloads_range ${period}` });
     },
   },
   {
@@ -64,7 +67,8 @@ export const downloadTools = [
     handler: async (input: { packages: string[]; period?: string }) => {
       const period = input.period ?? "last-week";
       const names = input.packages.map((p) => encPkg(p)).join(",");
-      return downloadsGet(`/downloads/point/${period}/${names}`);
+      const res = await downloadsGet(`/downloads/point/${period}/${names}`);
+      return res.ok ? res : translateError(res, { op: `downloads_bulk ${period}` });
     },
   },
   {
@@ -83,7 +87,8 @@ export const downloadTools = [
     }),
     handler: async (input: { name: string; period?: string }) => {
       const period = input.period ?? "last-week";
-      return downloadsGet(`/versions/${encPkg(input.name)}/${period}`);
+      const res = await downloadsGet(`/versions/${encPkg(input.name)}/${period}`);
+      return res.ok ? res : translateError(res, { pkg: input.name, op: `version_downloads ${period}` });
     },
   },
 ] as const;

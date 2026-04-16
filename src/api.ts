@@ -22,9 +22,44 @@ export interface ApiResponse<T = unknown> {
   error?: string;
 }
 
-/** URL-encode a package name (handles scoped packages like @scope/name). */
+/**
+ * npm package-name rules we enforce (permissive but bounded):
+ *   - Max 214 characters (registry limit).
+ *   - First char must be alphanumeric (no leading `.` or `_`).
+ *   - Remaining chars: alnum, `-`, `_`, `.`.
+ *   - Scoped form: `@<scope>/<name>` where both `<scope>` and `<name>` follow the above.
+ *
+ * Intentionally permissive (allows mixed case) to not reject legacy packages; the strict
+ * lowercase-only rule applies to NEW packages but old ones exist in the registry with
+ * uppercase characters.
+ */
+const PACKAGE_NAME_MAX_LENGTH = 214;
+const PACKAGE_NAME_PATTERN = /^(?:@[a-zA-Z0-9][a-zA-Z0-9\-_.]*\/)?[a-zA-Z0-9][a-zA-Z0-9\-_.]*$/;
+
+/**
+ * Validate an npm package name at tool boundaries. Returns an error message if invalid,
+ * null if safe to pass to the registry. Catches typos (empty strings, newlines, bad scope
+ * format) before they hit the wire and produce opaque 404s.
+ */
+export function validatePackageName(name: string): string | null {
+  if (typeof name !== "string" || name.length === 0) return "Package name is empty";
+  if (name.length > PACKAGE_NAME_MAX_LENGTH) {
+    return `Package name exceeds ${PACKAGE_NAME_MAX_LENGTH} characters (got ${name.length}).`;
+  }
+  if (!PACKAGE_NAME_PATTERN.test(name)) {
+    return `Invalid package name '${name}'. Names must start with an alphanumeric character and contain only [a-zA-Z0-9-_.], optionally prefixed with '@scope/' for scoped packages.`;
+  }
+  return null;
+}
+
+/**
+ * URL-encode a package name for use in registry paths. Throws on invalid input so the
+ * malformed name never reaches the wire. Scoped packages (`@scope/name`) are preserved
+ * with an unencoded `@` prefix as required by the registry.
+ */
 export function encPkg(name: string): string {
-  if (!name || name === "@") throw new Error("Invalid package name");
+  const err = validatePackageName(name);
+  if (err) throw new Error(err);
   return name.startsWith("@") ? `@${encodeURIComponent(name.slice(1))}` : encodeURIComponent(name);
 }
 

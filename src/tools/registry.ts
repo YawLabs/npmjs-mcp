@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { downloadsGet, replicateGet } from "../api.js";
+import { translateError } from "../errors.js";
 
 export const registryTools = [
   {
@@ -17,7 +18,8 @@ export const registryTools = [
     }),
     handler: async (input: { period?: string }) => {
       const period = input.period ?? "last-week";
-      return downloadsGet(`/downloads/point/${period}`);
+      const res = await downloadsGet(`/downloads/point/${period}`);
+      return res.ok ? res : translateError(res, { op: `registry_stats ${period}` });
     },
   },
   {
@@ -47,7 +49,7 @@ export const registryTools = [
         }>(`/_changes?limit=${limit}&descending=true`),
       ]);
 
-      if (!changesRes.ok) return changesRes;
+      if (!changesRes.ok) return translateError(changesRes, { op: "recent_changes" });
 
       const changes = changesRes.data!.results.map((r) => ({
         package: r.id,

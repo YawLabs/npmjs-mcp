@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { registryGet, registryPost } from "../api.js";
+import { translateError } from "../errors.js";
 
 export const securityTools = [
   {
@@ -20,7 +21,38 @@ export const securityTools = [
         .describe('Object mapping package names to arrays of version strings, e.g. {"lodash": ["4.17.20"]}'),
     }),
     handler: async (input: { packages: Record<string, string[]> }) => {
-      return registryPost("/-/npm/v1/security/advisories/bulk", input.packages);
+      const res = await registryPost<Record<string, unknown[]>>("/-/npm/v1/security/advisories/bulk", input.packages);
+      if (!res.ok) return translateError(res, { op: "audit" });
+
+      // Per-package rollup so callers don't have to re-aggregate the flat advisory list.
+      const advisoriesByPackage = res.data ?? {};
+      const summary = Object.entries(advisoriesByPackage).map(([name, advisories]) => {
+        const list = Array.isArray(advisories) ? advisories : [];
+        const severityCounts: Record<string, number> = {};
+        for (const adv of list) {
+          const severity = (adv as { severity?: string } | null)?.severity ?? "unknown";
+          severityCounts[severity] = (severityCounts[severity] ?? 0) + 1;
+        }
+        return { name, advisoryCount: list.length, severityCounts };
+      });
+
+      const queried = Object.keys(input.packages);
+      const vulnerable = summary.filter((s) => s.advisoryCount > 0).map((s) => s.name);
+      const clean = queried.filter((n) => !vulnerable.includes(n));
+
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          queriedCount: queried.length,
+          vulnerableCount: vulnerable.length,
+          cleanCount: clean.length,
+          vulnerable,
+          clean,
+          summary,
+          advisories: advisoriesByPackage,
+        },
+      };
     },
   },
   {
@@ -52,7 +84,8 @@ export const securityTools = [
           Object.entries(input.dependencies).map(([pkg, ver]) => [pkg, { version: ver }]),
         ),
       };
-      return registryPost("/-/npm/v1/security/audits", body);
+      const res = await registryPost("/-/npm/v1/security/audits", body);
+      return res.ok ? res : translateError(res, { pkg: input.name, op: "audit_deep" });
     },
   },
   {
@@ -67,7 +100,8 @@ export const securityTools = [
     },
     inputSchema: z.object({}),
     handler: async () => {
-      return registryGet("/-/npm/v1/keys");
+      const res = await registryGet("/-/npm/v1/keys");
+      return res.ok ? res : translateError(res, { op: "signing_keys" });
     },
   },
 ] as const;

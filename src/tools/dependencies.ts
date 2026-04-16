@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { type ApiResponse, createLimiter, encPkg, maxSatisfying, registryGet, registryGetAbbreviated } from "../api.js";
+import { translateError } from "../errors.js";
 import type { AbbreviatedPackument, VersionDoc } from "../types.js";
 
 export const dependencyTools = [
@@ -21,7 +22,7 @@ export const dependencyTools = [
     handler: async (input: { name: string; version?: string }) => {
       const ver = input.version ?? "latest";
       const res = await registryGet<VersionDoc>(`/${encPkg(input.name)}/${ver}`);
-      if (!res.ok) return res;
+      if (!res.ok) return translateError(res, { pkg: input.name, op: `dependencies ${ver}` });
 
       const v = res.data!;
       return {
@@ -157,7 +158,7 @@ export const dependencyTools = [
     handler: async (input: { name: string; version?: string; allowed?: string[] }) => {
       const ver = input.version ?? "latest";
       const res = await registryGet<VersionDoc>(`/${encPkg(input.name)}/${ver}`);
-      if (!res.ok) return res;
+      if (!res.ok) return translateError(res, { pkg: input.name, op: `license_check ${ver}` });
 
       const pkg = res.data!;
       const depEntries = Object.entries(pkg.dependencies ?? {});

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { encPkg, registryGet } from "../api.js";
+import { translateError } from "../errors.js";
 import type { Packument, VersionDoc } from "../types.js";
 
 export const packageTools = [
@@ -19,7 +20,7 @@ export const packageTools = [
     }),
     handler: async (input: { name: string }) => {
       const res = await registryGet<Packument>(`/${encPkg(input.name)}`);
-      if (!res.ok) return res;
+      if (!res.ok) return translateError(res, { pkg: input.name, op: "package" });
 
       const pkg = res.data!;
       const latest = pkg["dist-tags"]?.latest;
@@ -66,7 +67,7 @@ export const packageTools = [
     handler: async (input: { name: string; version?: string }) => {
       const ver = input.version ?? "latest";
       const res = await registryGet<VersionDoc>(`/${encPkg(input.name)}/${ver}`);
-      if (!res.ok) return res;
+      if (!res.ok) return translateError(res, { pkg: input.name, op: `version ${ver}` });
 
       const v = res.data!;
       return {
@@ -118,7 +119,7 @@ export const packageTools = [
     }),
     handler: async (input: { name: string; limit?: number }) => {
       const res = await registryGet<Packument>(`/${encPkg(input.name)}`);
-      if (!res.ok) return res;
+      if (!res.ok) return translateError(res, { pkg: input.name, op: "versions" });
 
       const pkg = res.data!;
       const limit = input.limit ?? 50;
@@ -161,7 +162,7 @@ export const packageTools = [
     }),
     handler: async (input: { name: string }) => {
       const res = await registryGet<Packument>(`/${encPkg(input.name)}`);
-      if (!res.ok) return res;
+      if (!res.ok) return translateError(res, { pkg: input.name, op: "readme" });
 
       const readme = res.data!.readme;
       if (!readme) {
@@ -185,7 +186,8 @@ export const packageTools = [
       name: z.string().describe("Package name"),
     }),
     handler: async (input: { name: string }) => {
-      return registryGet<Record<string, string>>(`/-/package/${encPkg(input.name)}/dist-tags`);
+      const res = await registryGet<Record<string, string>>(`/-/package/${encPkg(input.name)}/dist-tags`);
+      return res.ok ? res : translateError(res, { pkg: input.name, op: "dist_tags" });
     },
   },
   {
@@ -223,7 +225,7 @@ export const packageTools = [
         registryGet<Packument>(`/${encPkg(typesPackage)}`),
       ]);
 
-      if (!versionRes.ok) return versionRes;
+      if (!versionRes.ok) return translateError(versionRes, { pkg: input.name, op: `types ${ver}` });
 
       const v = versionRes.data!;
       const hasBuiltinTypes = !!(v.types || v.typings);

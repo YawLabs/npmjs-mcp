@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { type ApiResponse, downloadsGet, encPkg, registryGet, registryPost } from "../api.js";
+import { translateError } from "../errors.js";
 import type { Packument } from "../types.js";
 
 interface DownloadPoint {
@@ -96,7 +97,7 @@ export const analysisTools = [
         downloadsGet<DownloadPoint>(`/downloads/point/last-month/${encPkg(input.name)}`),
       ]);
 
-      if (!pkgRes.ok) return pkgRes;
+      if (!pkgRes.ok) return translateError(pkgRes, { pkg: input.name, op: "health" });
 
       const pkg = pkgRes.data!;
       const latest = pkg["dist-tags"]?.latest;
@@ -191,7 +192,7 @@ export const analysisTools = [
     }),
     handler: async (input: { name: string }) => {
       const res = await registryGet<Packument>(`/${encPkg(input.name)}`);
-      if (!res.ok) return res;
+      if (!res.ok) return translateError(res, { pkg: input.name, op: "maintainers" });
 
       const pkg = res.data!;
 
@@ -234,7 +235,7 @@ export const analysisTools = [
     }),
     handler: async (input: { name: string; limit?: number }) => {
       const res = await registryGet<Packument>(`/${encPkg(input.name)}`);
-      if (!res.ok) return res;
+      if (!res.ok) return translateError(res, { pkg: input.name, op: "release_frequency" });
 
       const pkg = res.data!;
       const limit = input.limit ?? 20;

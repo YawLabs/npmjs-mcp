@@ -48,6 +48,16 @@ async function fetchPackument(pkg: string): Promise<ApiResponse<Packument>> {
   return registryGetAuth<Packument>(`/${encPkg(pkg)}?write=true`);
 }
 
+/**
+ * Parse a team target in the form `@scope:team` or `scope:team` into its components.
+ * Returns null if the input doesn't match the required shape — callers should
+ * surface a 400 error with the format hint.
+ */
+function parseTeamTarget(target: string): { scope: string; team: string } | null {
+  const m = target.match(/^@?([^:]+):(.+)$/);
+  return m ? { scope: m[1], team: m[2] } : null;
+}
+
 /** Highest semver in the list (loose compare, ignoring prereleases). Null if empty. */
 function highestVersion(versions: string[]): string | null {
   const parsed: Array<[number, number, number, string]> = [];
@@ -71,8 +81,10 @@ export const writeTools = [
     description:
       "Deprecate a package or specific versions. Shows a warning message on install. " +
       "Uses the HTTP API with NPM_TOKEN, bypassing the CLI auth friction that causes 422 errors " +
-      "on accounts with 2FA. Message format: prefer em-dash form " +
-      "('Renamed to @scope/pkg — install that instead'); period-capital form sometimes triggers 422.",
+      "on accounts with 2FA. Message format tip: the period-then-capital pattern " +
+      "('... install that instead. Thanks.') has 422'd on at least one scoped package; " +
+      "em-dash form is the known-good workaround. Pass force: true to skip the preflight " +
+      "check if you want the exact message as-is.",
     annotations: {
       title: "Deprecate package",
       readOnlyHint: false,
@@ -235,6 +247,10 @@ export const writeTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
+      // Defense in depth: the zod schema (`z.literal(true)`) should already reject anything
+      // other than `true`, but a caller that bypasses schema validation (direct handler
+      // invocation in tests, SDK versions that don't validate) would otherwise slip past.
+      // Keep this runtime check so the destructive path can never execute without confirm.
       if (input.confirm !== true) {
         return {
           ok: false,
@@ -351,6 +367,9 @@ export const writeTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
+      // Defense in depth: the zod schema (`z.literal(true)`) should reject anything other
+      // than `true` at the MCP boundary. This runtime check guards against schema bypasses
+      // (direct handler calls in tests, SDK variants that don't enforce literals).
       if (input.confirm !== true) {
         return {
           ok: false,
@@ -726,15 +745,15 @@ export const writeTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
-      const m = input.team.match(/^@?([^:]+):(.+)$/);
-      if (!m) {
+      const parsed = parseTeamTarget(input.team);
+      if (!parsed) {
         return {
           ok: false,
           status: 400,
           error: `Team must be in the form '@scope:team' (got '${input.team}').`,
         };
       }
-      const [, scope, team] = m;
+      const { scope, team } = parsed;
 
       const res = await registryPutAuth(`/-/team/${encodeURIComponent(scope)}/${encodeURIComponent(team)}/package`, {
         package: input.package,
@@ -773,15 +792,15 @@ export const writeTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
-      const m = input.team.match(/^@?([^:]+):(.+)$/);
-      if (!m) {
+      const parsed = parseTeamTarget(input.team);
+      if (!parsed) {
         return {
           ok: false,
           status: 400,
           error: `Team must be in the form '@scope:team' (got '${input.team}').`,
         };
       }
-      const [, scope, team] = m;
+      const { scope, team } = parsed;
 
       const res = await registryDeleteAuth(`/-/team/${encodeURIComponent(scope)}/${encodeURIComponent(team)}/package`, {
         package: input.package,
@@ -817,11 +836,11 @@ export const writeTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
-      const m = input.team.match(/^@?([^:]+):(.+)$/);
-      if (!m) {
+      const parsed = parseTeamTarget(input.team);
+      if (!parsed) {
         return { ok: false, status: 400, error: `Team must be in the form '@scope:team' (got '${input.team}').` };
       }
-      const [, scope, team] = m;
+      const { scope, team } = parsed;
 
       const res = await registryPutAuth(`/-/org/${encodeURIComponent(scope)}/team`, {
         name: team,
@@ -853,11 +872,11 @@ export const writeTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
-      const m = input.team.match(/^@?([^:]+):(.+)$/);
-      if (!m) {
+      const parsed = parseTeamTarget(input.team);
+      if (!parsed) {
         return { ok: false, status: 400, error: `Team must be in the form '@scope:team' (got '${input.team}').` };
       }
-      const [, scope, team] = m;
+      const { scope, team } = parsed;
 
       const res = await registryDeleteAuth(`/-/team/${encodeURIComponent(scope)}/${encodeURIComponent(team)}`);
       if (!res.ok) return translateError(res, { op: `team_delete ${input.team}` });
@@ -887,11 +906,11 @@ export const writeTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
-      const m = input.team.match(/^@?([^:]+):(.+)$/);
-      if (!m) {
+      const parsed = parseTeamTarget(input.team);
+      if (!parsed) {
         return { ok: false, status: 400, error: `Team must be in the form '@scope:team' (got '${input.team}').` };
       }
-      const [, scope, team] = m;
+      const { scope, team } = parsed;
 
       const res = await registryPutAuth(`/-/team/${encodeURIComponent(scope)}/${encodeURIComponent(team)}/user`, {
         user: input.user,
@@ -923,11 +942,11 @@ export const writeTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
-      const m = input.team.match(/^@?([^:]+):(.+)$/);
-      if (!m) {
+      const parsed = parseTeamTarget(input.team);
+      if (!parsed) {
         return { ok: false, status: 400, error: `Team must be in the form '@scope:team' (got '${input.team}').` };
       }
-      const [, scope, team] = m;
+      const { scope, team } = parsed;
 
       const res = await registryDeleteAuth(`/-/team/${encodeURIComponent(scope)}/${encodeURIComponent(team)}/user`, {
         user: input.user,

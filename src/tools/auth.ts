@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { registryGetAuth, requireAuth } from "../api.js";
+import { translateError } from "../errors.js";
 
 interface TokenObject {
   token: string;
@@ -48,7 +49,8 @@ export const authTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
-      return registryGetAuth<{ username: string }>("/-/whoami");
+      const res = await registryGetAuth<{ username: string }>("/-/whoami");
+      return res.ok ? res : translateError(res, { op: "whoami" });
     },
   },
   {
@@ -68,7 +70,7 @@ export const authTools = [
       if (authErr) return authErr;
 
       const res = await registryGetAuth<UserProfile>("/-/npm/v1/user");
-      if (!res.ok) return res;
+      if (!res.ok) return translateError(res, { op: "profile" });
 
       const p = res.data!;
       return {
@@ -117,7 +119,7 @@ export const authTools = [
       const qs = params.toString();
       const path = `/-/npm/v1/tokens${qs ? `?${qs}` : ""}`;
       const res = await registryGetAuth<TokenListResponse>(path);
-      if (!res.ok) return res;
+      if (!res.ok) return translateError(res, { op: "tokens" });
 
       const data = res.data!;
       return {
@@ -205,7 +207,7 @@ export const authTools = [
       const res = await registryGetAuth<Record<string, string>>(
         `/-/user/org.couchdb.user:${encodeURIComponent(input.username)}/package`,
       );
-      if (!res.ok) return res;
+      if (!res.ok) return translateError(res, { op: `user_packages ${input.username}` });
 
       const packages = Object.entries(res.data!).map(([name, access]) => ({ name, access }));
       return {

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { encPkg, registryGetAuth, requireAuth } from "../api.js";
+import { translateError } from "../errors.js";
 
 interface TrustConfig {
   id?: string;
@@ -28,7 +29,7 @@ export const trustTools = [
       if (authErr) return authErr;
 
       const res = await registryGetAuth<TrustConfig[]>(`/-/package/${encPkg(input.name)}/trust`);
-      if (!res.ok) return res;
+      if (!res.ok) return translateError(res, { pkg: input.name, op: "trusted_publishers" });
 
       const configs = (res.data ?? []).map((c) => {
         const result: Record<string, unknown> = {

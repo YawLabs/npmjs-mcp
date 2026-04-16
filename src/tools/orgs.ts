@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { registryGetAuth, requireAuth } from "../api.js";
+import { translateError } from "../errors.js";
 
 export const orgTools = [
   {
@@ -21,7 +22,7 @@ export const orgTools = [
       if (authErr) return authErr;
 
       const res = await registryGetAuth<Record<string, string>>(`/-/org/${encodeURIComponent(input.org)}/user`);
-      if (!res.ok) return res;
+      if (!res.ok) return translateError(res, { op: `org_members ${input.org}` });
 
       const members = Object.entries(res.data!).map(([username, role]) => ({ username, role }));
       return {
@@ -54,7 +55,7 @@ export const orgTools = [
       if (authErr) return authErr;
 
       const res = await registryGetAuth<Record<string, string>>(`/-/org/${encodeURIComponent(input.org)}/package`);
-      if (!res.ok) return res;
+      if (!res.ok) return translateError(res, { op: `org_packages ${input.org}` });
 
       const packages = Object.entries(res.data!).map(([name, access]) => ({ name, access }));
       return {
@@ -86,7 +87,7 @@ export const orgTools = [
       if (authErr) return authErr;
 
       const res = await registryGetAuth<string[]>(`/-/org/${encodeURIComponent(input.org)}/team`);
-      if (!res.ok) return res;
+      if (!res.ok) return translateError(res, { op: `org_teams ${input.org}` });
 
       return {
         ok: true,
@@ -121,7 +122,7 @@ export const orgTools = [
       const res = await registryGetAuth<Record<string, string>>(
         `/-/team/${encodeURIComponent(input.org)}/${encodeURIComponent(input.team)}/package`,
       );
-      if (!res.ok) return res;
+      if (!res.ok) return translateError(res, { op: `team_packages ${input.org}:${input.team}` });
 
       const packages = Object.entries(res.data!).map(([name, permissions]) => ({ name, permissions }));
       return {

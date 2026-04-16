@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { encPkg, registryGetAuth, requireAuth } from "../api.js";
+import { translateError } from "../errors.js";
 
 export const accessTools = [
   {
@@ -22,7 +23,7 @@ export const accessTools = [
       if (authErr) return authErr;
 
       const res = await registryGetAuth<Record<string, string>>(`/-/package/${encPkg(input.name)}/collaborators`);
-      if (!res.ok) return res;
+      if (!res.ok) return translateError(res, { pkg: input.name, op: "collaborators" });
 
       const collaborators = Object.entries(res.data!).map(([username, permissions]) => ({
         username,
@@ -64,7 +65,7 @@ export const accessTools = [
       ]);
 
       // Need at least one successful response
-      if (!accessRes.ok && !collabRes.ok) return collabRes;
+      if (!accessRes.ok && !collabRes.ok) return translateError(collabRes, { pkg: input.name, op: "package_access" });
 
       const result: Record<string, unknown> = {
         package: input.name,

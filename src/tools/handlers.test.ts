@@ -357,6 +357,148 @@ describe("Dependency handlers", () => {
     assert.equal(result.data.flagged, 0);
     assert.ok(result.data.allowed.includes("GPL-3.0"));
   });
+
+  it("npm_dep_tree walks transitive deps up to the requested depth", async () => {
+    // Graph: root@1.0.0 -> a@^1.0.0, b@^1.0.0 ; a@1.0.0 -> c@^1.0.0 ; b/c: leaves
+    mockFetchMulti({
+      "/root": {
+        name: "root",
+        "dist-tags": { latest: "1.0.0" },
+        versions: {
+          "1.0.0": {
+            name: "root",
+            version: "1.0.0",
+            dependencies: { a: "^1.0.0", b: "^1.0.0" },
+          },
+        },
+      },
+      "/a": {
+        name: "a",
+        "dist-tags": { latest: "1.0.0" },
+        versions: {
+          "1.0.0": { name: "a", version: "1.0.0", dependencies: { c: "^1.0.0" } },
+        },
+      },
+      "/b": {
+        name: "b",
+        "dist-tags": { latest: "1.0.0" },
+        versions: {
+          "1.0.0": { name: "b", version: "1.0.0", dependencies: {} },
+        },
+      },
+      "/c": {
+        name: "c",
+        "dist-tags": { latest: "1.0.0" },
+        versions: {
+          "1.0.0": { name: "c", version: "1.0.0", dependencies: {} },
+        },
+      },
+    });
+
+    const tool = findTool(dependencyTools, "npm_dep_tree");
+    const result = (await tool.handler({ name: "root", depth: 3 })) as {
+      data: {
+        root: string;
+        totalPackages: number;
+        tree: Record<string, { version: string; dependencies: Record<string, string> }>;
+      };
+    };
+    assert.equal(result.data.root, "root@1.0.0");
+    // All four packages (root, a, b, c) should resolve within depth 3.
+    assert.equal(result.data.totalPackages, 4);
+    assert.ok(result.data.tree["root@1.0.0"]);
+    assert.ok(result.data.tree["a@1.0.0"]);
+    assert.ok(result.data.tree["b@1.0.0"]);
+    assert.ok(result.data.tree["c@1.0.0"]);
+    assert.deepEqual(result.data.tree["a@1.0.0"].dependencies, { c: "^1.0.0" });
+  });
+
+  it("npm_dep_tree deduplicates when two parents resolve to the same child version", async () => {
+    // Graph: root -> a, b ; both a and b depend on shared@^1.0.0.
+    // The shared packument must only be walked once even though it's reached via two paths.
+    mockFetchMulti({
+      "/root": {
+        name: "root",
+        "dist-tags": { latest: "1.0.0" },
+        versions: {
+          "1.0.0": {
+            name: "root",
+            version: "1.0.0",
+            dependencies: { a: "1.0.0", b: "1.0.0" },
+          },
+        },
+      },
+      "/a": {
+        name: "a",
+        "dist-tags": { latest: "1.0.0" },
+        versions: { "1.0.0": { name: "a", version: "1.0.0", dependencies: { shared: "^1.0.0" } } },
+      },
+      "/b": {
+        name: "b",
+        "dist-tags": { latest: "1.0.0" },
+        versions: { "1.0.0": { name: "b", version: "1.0.0", dependencies: { shared: "^1.0.0" } } },
+      },
+      "/shared": {
+        name: "shared",
+        "dist-tags": { latest: "1.5.0" },
+        versions: {
+          "1.5.0": { name: "shared", version: "1.5.0", dependencies: {} },
+        },
+      },
+    });
+
+    const tool = findTool(dependencyTools, "npm_dep_tree");
+    const result = (await tool.handler({ name: "root", depth: 3 })) as {
+      data: { totalPackages: number; tree: Record<string, unknown> };
+    };
+    // root, a, b, shared (exactly one entry for shared even though two parents reference it).
+    assert.equal(result.data.totalPackages, 4);
+    assert.ok(result.data.tree["shared@1.5.0"]);
+    // Shared resolved to 1.5.0 via ^1.0.0 range — should not also appear under a different key.
+    const sharedKeys = Object.keys(result.data.tree).filter((k) => k.startsWith("shared@"));
+    assert.equal(sharedKeys.length, 1);
+  });
+
+  it("npm_dep_tree records a warning and continues when a dep fetch fails", async () => {
+    // Per-URL mock: /root succeeds with 200, /missing 404s. Need a custom mock because
+    // mockFetchMulti applies one status to every response.
+    globalThis.fetch = (async (input: string | URL | Request, _init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/root")) {
+        return new Response(
+          JSON.stringify({
+            name: "root",
+            "dist-tags": { latest: "1.0.0" },
+            versions: {
+              "1.0.0": {
+                name: "root",
+                version: "1.0.0",
+                dependencies: { missing: "^1.0.0" },
+              },
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("Not Found", { status: 404, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+
+    const tool = findTool(dependencyTools, "npm_dep_tree");
+    const result = (await tool.handler({ name: "root", depth: 2 })) as {
+      ok: boolean;
+      data: {
+        totalPackages: number;
+        tree: Record<string, { dependencies: Record<string, string> }>;
+        warnings?: string[];
+      };
+    };
+    assert.equal(result.ok, true);
+    assert.ok(result.data.warnings);
+    assert.equal(result.data.warnings!.length, 1);
+    assert.match(result.data.warnings![0], /missing/);
+    // root plus a placeholder for the failed `missing` dep.
+    assert.ok(Object.keys(result.data.tree).length >= 2);
+  });
 });
 
 // ─── Downloads ───
@@ -505,6 +647,92 @@ describe("Registry handlers", () => {
     const tool = findTool(registryTools, "npm_registry_stats");
     await tool.handler({ period: "last-month" });
     assert.ok(lastRequest!.url.includes("/downloads/point/last-month"));
+  });
+
+  it("npm_recent_changes fetches the CouchDB changes feed in descending order", async () => {
+    // More specific route (/_changes) must come first — mockFetchMulti matches in order.
+    mockFetchMulti({
+      "/_changes": {
+        results: [
+          { seq: 999, id: "foo", changes: [{ rev: "1-abc" }] },
+          { seq: 998, id: "bar", changes: [{ rev: "2-def" }] },
+        ],
+      },
+      "replicate.npmjs.com/": { doc_count: 3_000_000 },
+    });
+
+    const tool = findTool(registryTools, "npm_recent_changes");
+    const result = (await tool.handler({})) as {
+      ok: boolean;
+      data: {
+        totalPackages: number | null;
+        changes: Array<{ package: string; rev: string }>;
+      };
+    };
+    assert.equal(result.ok, true);
+    assert.equal(result.data.changes.length, 2);
+    assert.equal(result.data.changes[0].package, "foo");
+    assert.equal(result.data.changes[0].rev, "1-abc");
+    // Ensure descending order was requested explicitly (avoids update_seq arithmetic).
+    assert.ok(requests.some((r) => r.url.includes(REPLICATE) && r.url.includes("descending=true")));
+  });
+
+  it("npm_recent_changes applies the limit query param", async () => {
+    mockFetchMulti({
+      "/_changes": { results: [] },
+      "replicate.npmjs.com/": { doc_count: 3_000_000 },
+    });
+    const tool = findTool(registryTools, "npm_recent_changes");
+    await tool.handler({ limit: 42 });
+    const changesReq = requests.find((r) => r.url.includes("/_changes"));
+    assert.ok(changesReq);
+    assert.ok(changesReq!.url.includes("limit=42"));
+  });
+
+  it("npm_recent_changes defaults limit to 25 when unspecified", async () => {
+    mockFetchMulti({
+      "/_changes": { results: [] },
+      "replicate.npmjs.com/": { doc_count: 3_000_000 },
+    });
+    const tool = findTool(registryTools, "npm_recent_changes");
+    await tool.handler({});
+    const changesReq = requests.find((r) => r.url.includes("/_changes"));
+    assert.ok(changesReq);
+    assert.ok(changesReq!.url.includes("limit=25"));
+  });
+
+  it("npm_recent_changes still returns changes when db-info fetch fails", async () => {
+    // /_changes succeeds (200), but the db-info route (base /) returns 500.
+    globalThis.fetch = (async (input: string | URL | Request, _init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/_changes")) {
+        return new Response(
+          JSON.stringify({
+            results: [{ seq: 1, id: "solo", changes: [{ rev: "1-zzz" }] }],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("boom", { status: 500 });
+    }) as typeof fetch;
+
+    const tool = findTool(registryTools, "npm_recent_changes");
+    const result = (await tool.handler({})) as {
+      ok: boolean;
+      data: { totalPackages: number | null; changes: unknown[] };
+    };
+    assert.equal(result.ok, true);
+    assert.equal(result.data.totalPackages, null);
+    assert.equal(result.data.changes.length, 1);
+  });
+
+  it("npm_recent_changes surfaces translated errors when the changes feed fails", async () => {
+    // Both requests 503 — the handler must short-circuit with an error from /_changes.
+    mockFetch(503, "Service Unavailable");
+    const tool = findTool(registryTools, "npm_recent_changes");
+    const result = (await tool.handler({})) as { ok: boolean; status: number; error?: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 503);
   });
 });
 

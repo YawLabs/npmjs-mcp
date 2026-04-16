@@ -93,7 +93,7 @@ export const writeTools = [
       openWorldHint: true,
     },
     inputSchema: z.object({
-      name: z.string().describe("Package name (e.g. '@yawlabs/tokenmeter-mcp')"),
+      name: z.string().describe("Package name (e.g. '@yawlabs/spend')"),
       message: z
         .string()
         .describe("Deprecation message. Empty string to clear deprecation (use npm_undeprecate instead)."),

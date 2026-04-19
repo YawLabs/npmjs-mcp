@@ -1,6 +1,6 @@
 {
   "name": "@yawlabs/npmjs-mcp",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "npm registry MCP server — package intelligence, security audits, and dependency analysis for AI assistants",
   "license": "MIT",
   "author": "YawLabs <contact@yaw.sh>",
@@ -39,6 +39,10 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {},
+  "overrides": {
+    "hono": "^4.12.14",
+    "@hono/node-server": "^1.19.13"
+  },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@modelcontextprotocol/sdk": "^1.29.0",

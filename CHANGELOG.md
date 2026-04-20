@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-04-20
+
 ### Changed
 - Dev dependencies upgraded: Biome 1.9.4 → 2.4.12, TypeScript 5.9.3 → 6.0.3, Zod 3.25.76 → 4.3.6, @types/node 22 → 25. Biome config migrated to v2 schema (`organizeImports` moved under `assist.actions.source`, `files.ignore` → `files.includes`). `tsconfig.json` now sets `types: ["node"]` explicitly (TS 6 no longer auto-includes ambient node types). `z.record()` calls updated to the Zod 4 two-argument form.
 - Upgraded CI actions: `actions/checkout@v4` → `v6`, `actions/setup-node@v4` → `v6`.

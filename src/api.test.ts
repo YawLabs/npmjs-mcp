@@ -7,6 +7,7 @@ import {
   encUser,
   maxSatisfying,
   registryGet,
+  registryPost,
   validatePackageName,
   validateScope,
   validateTeam,
@@ -308,6 +309,168 @@ describe("retry/backoff on transient failures", () => {
     assert.equal(res.ok, false);
     assert.equal(res.status, 404);
     assert.equal(i, 1);
+  });
+
+  it("retries 429 rate-limit responses", async () => {
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    let i = 0;
+    globalThis.fetch = (async () => {
+      i++;
+      if (i < 2) return new Response("rate limited", { status: 429 });
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const res = await registryGet("/test");
+    assert.equal(res.ok, true);
+    assert.equal(res.status, 200);
+    assert.equal(i, 2);
+  });
+
+  it("retries 502 and 504 gateway errors", async () => {
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    const statuses = [502, 504, 200];
+    let i = 0;
+    globalThis.fetch = (async () => {
+      const s = statuses[i++];
+      if (s === 200) {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("gateway error", { status: s });
+    }) as typeof fetch;
+
+    const res = await registryGet("/test");
+    assert.equal(res.ok, true);
+    assert.equal(res.status, 200);
+    assert.equal(i, 3);
+  });
+
+  it("honors Retry-After header in seconds form", async () => {
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    let i = 0;
+    globalThis.fetch = (async () => {
+      i++;
+      if (i < 2) {
+        return new Response("rate limited", {
+          status: 429,
+          headers: { "Retry-After": "0" },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const res = await registryGet("/test");
+    assert.equal(res.ok, true);
+    assert.equal(i, 2);
+  });
+
+  it("honors Retry-After header in HTTP-date form", async () => {
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    let i = 0;
+    globalThis.fetch = (async () => {
+      i++;
+      if (i < 2) {
+        // A past date → parseRetryAfter returns max(0, …) = 0, so no real wait.
+        return new Response("rate limited", {
+          status: 429,
+          headers: { "Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT" },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const res = await registryGet("/test");
+    assert.equal(res.ok, true);
+    assert.equal(i, 2);
+  });
+
+  it("retries on fetch network errors and eventually succeeds", async () => {
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    let i = 0;
+    globalThis.fetch = (async () => {
+      i++;
+      if (i < 2) throw new TypeError("fetch failed");
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const res = await registryGet("/test");
+    assert.equal(res.ok, true);
+    assert.equal(res.status, 200);
+    assert.equal(i, 2);
+  });
+
+  it("gives up after MAX_RETRIES on persistent network errors", async () => {
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    let i = 0;
+    globalThis.fetch = (async () => {
+      i++;
+      throw new TypeError("fetch failed");
+    }) as typeof fetch;
+
+    const res = await registryGet("/test");
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 0);
+    assert.match(res.error ?? "", /fetch failed/);
+    // MAX_RETRIES = 2 → total of 3 attempts
+    assert.equal(i, 3);
+  });
+
+  it("registryPost retries transient failures", async () => {
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    const methods: string[] = [];
+    let i = 0;
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      methods.push(init?.method ?? "GET");
+      i++;
+      if (i < 2) return new Response("unavailable", { status: 503 });
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const res = await registryPost("/test", { hello: "world" });
+    assert.equal(res.ok, true);
+    assert.equal(i, 2);
+    assert.deepEqual(methods, ["POST", "POST"]);
+  });
+});
+
+describe("response body handling", () => {
+  it("handles 204 No Content with no body", async () => {
+    globalThis.fetch = (async () => {
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+
+    const res = await registryGet("/test");
+    assert.equal(res.ok, true);
+    assert.equal(res.status, 204);
+    assert.equal(res.data, undefined);
+  });
+
+  it("handles content-length: 0 responses without attempting JSON parse", async () => {
+    globalThis.fetch = (async () => {
+      return new Response("", { status: 200, headers: { "content-length": "0" } });
+    }) as typeof fetch;
+
+    const res = await registryGet("/test");
+    assert.equal(res.ok, true);
+    assert.equal(res.status, 200);
+    assert.equal(res.data, undefined);
   });
 });
 

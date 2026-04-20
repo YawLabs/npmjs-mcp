@@ -855,10 +855,7 @@ describe("Org handlers", () => {
     assert.ok(lastRequest!.url.includes("/-/team/yawlabs/developers/user"));
     assert.equal(result.ok, true);
     assert.equal(result.data.memberCount, 2);
-    assert.deepEqual(
-      result.data.members.map((m) => m.username).sort(),
-      ["alice", "bob"],
-    );
+    assert.deepEqual(result.data.members.map((m) => m.username).sort(), ["alice", "bob"]);
   });
 
   it("npm_team_members rejects malformed org/team before hitting the network", async () => {

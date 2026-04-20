@@ -32,7 +32,7 @@
     "build": "tsc && node build.mjs",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
-    "test": "npm run build && node --test dist/**/*.test.js",
+    "test": "npm run build && node --test dist/api.test.js dist/tools/tools.test.js dist/tools/handlers.test.js dist/tools/writes.test.js dist/tools/hooks.test.js",
     "test:ci": "npm run test",
     "lint": "biome check src/",
     "lint:fix": "biome check --write src/",

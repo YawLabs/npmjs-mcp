@@ -12,8 +12,15 @@ updates:
       prefix: deps
       include: scope
     groups:
+      # Group minor + patch dev-dep updates so we get one PR per week instead
+      # of four. Majors stay ungrouped — each gets its own PR so we can review
+      # breaking changes (Biome config migrations, TS/Zod API shifts) one at a
+      # time instead of a bundled "four majors at once" review.
       dev-dependencies:
         dependency-type: development
+        update-types:
+          - minor
+          - patch
 
   - package-ecosystem: github-actions
     directory: /

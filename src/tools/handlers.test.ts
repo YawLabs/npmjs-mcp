@@ -844,6 +844,34 @@ describe("Org handlers", () => {
     await tool.handler({ org: "yawlabs", team: "developers" });
     assert.ok(lastRequest!.url.includes("/-/team/yawlabs/developers/package"));
   });
+
+  it("npm_team_members calls GET /-/team/{org}/{team}/user and shapes response", async () => {
+    mockFetch(200, { alice: "developer", bob: "developer" });
+    const tool = findTool(orgTools, "npm_team_members");
+    const result = (await tool.handler({ org: "yawlabs", team: "developers" })) as {
+      ok: boolean;
+      data: { memberCount: number; members: Array<{ username: string; role: string }> };
+    };
+    assert.ok(lastRequest!.url.includes("/-/team/yawlabs/developers/user"));
+    assert.equal(result.ok, true);
+    assert.equal(result.data.memberCount, 2);
+    assert.deepEqual(
+      result.data.members.map((m) => m.username).sort(),
+      ["alice", "bob"],
+    );
+  });
+
+  it("npm_team_members rejects malformed org/team before hitting the network", async () => {
+    const tool = findTool(orgTools, "npm_team_members");
+    const result = (await tool.handler({ org: "bad scope", team: "developers" })) as {
+      ok: boolean;
+      status: number;
+      error: string;
+    };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.match(result.error, /scope/i);
+  });
 });
 
 // ─── Provenance ───

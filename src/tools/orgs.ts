@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { registryGetAuth, requireAuth } from "../api.js";
+import { encScope, encTeam, registryGetAuth, requireAuth, validateScope, validateTeam } from "../api.js";
 import { translateError } from "../errors.js";
 
 export const orgTools = [
@@ -133,6 +133,48 @@ export const orgTools = [
           team: input.team,
           packageCount: packages.length,
           packages,
+        },
+      };
+    },
+  },
+  {
+    name: "npm_team_members",
+    description:
+      "List all members of a team with their roles (e.g. 'developer'). Complements npm_team_member_add and npm_team_member_remove — use this to audit who is currently on the team before adding or removing members.",
+    annotations: {
+      title: "List team members",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: z.object({
+      org: z.string().describe("Organization name (without @ prefix)"),
+      team: z.string().describe("Team name"),
+    }),
+    handler: async (input: { org: string; team: string }) => {
+      const authErr = requireAuth();
+      if (authErr) return authErr;
+
+      const scopeErr = validateScope(input.org);
+      if (scopeErr) return { ok: false, status: 400, error: scopeErr };
+      const teamErr = validateTeam(input.team);
+      if (teamErr) return { ok: false, status: 400, error: teamErr };
+
+      const res = await registryGetAuth<Record<string, string>>(
+        `/-/team/${encScope(input.org)}/${encTeam(input.team)}/user`,
+      );
+      if (!res.ok) return translateError(res, { op: `team_members ${input.org}:${input.team}` });
+
+      const members = Object.entries(res.data!).map(([username, role]) => ({ username, role }));
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          org: input.org,
+          team: input.team,
+          memberCount: members.length,
+          members,
         },
       };
     },

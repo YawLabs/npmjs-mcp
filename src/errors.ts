@@ -37,12 +37,12 @@ export function translateError<T>(res: ApiResponse<T>, context: { pkg?: string; 
     case 422:
       return {
         ...res,
-        error: `Registry rejected the request payload${pkgPart}${opPart} (422 Unprocessable Entity). Most common causes: (1) invalid semver range — validate with npm_package versions first; (2) deprecation message format — em-dash form works, period-capital form sometimes 422s; (3) account-level 2FA policy requires interactive CLI session. If #3, CLI fallback: \`npm login --auth-type=web\` followed by the npm CLI command. Raw: ${res.error}`,
+        error: `Registry rejected the request payload${pkgPart}${opPart} (422 Unprocessable Entity). Most common causes: (1) semver range matches no published versions — validate with npm_versions first; (2) deprecation message exceeds 1024 characters; (3) account-level 2FA policy requires an interactive CLI session. If #3, CLI fallback: \`npm login --auth-type=web\` followed by the equivalent npm CLI command. Raw: ${res.error}`,
       };
     case 429:
       return {
         ...res,
-        error: `Rate limited${opPart}. Wait 60 seconds and retry. Raw: ${res.error}`,
+        error: `Rate limited${opPart}. Retried automatically and still failed — wait longer and retry, or contact npm support if this persists. Raw: ${res.error}`,
       };
     case 0:
       return {
@@ -55,31 +55,18 @@ export function translateError<T>(res: ApiResponse<T>, context: { pkg?: string; 
 }
 
 /**
- * Validate a deprecation message against observed 422-inducing patterns.
+ * Validate a deprecation message against the npm registry's hard 1024-char limit.
  * Returns null if safe to send, or an error string explaining the issue.
  *
- * Known bad pattern: "<text>. <Capitalized text>" — period followed by space and capital letter
- * has 422'd on at least one scoped package. The working form uses em-dash and lowercase:
- * "Renamed to @scope/pkg — install that instead".
+ * History: earlier versions also flagged a "period + space + capital letter" pattern
+ * after a single 422 incident. Follow-up testing (issue #2) confirmed that case was
+ * a wildcard-version issue, not a message-format issue, and the pattern check produced
+ * too many false positives. Removed in v0.10.
  */
 export function validateDeprecationMessage(msg: string): string | null {
   if (msg.length > 1024) {
     return "Deprecation message exceeds 1024 characters (registry limit).";
   }
-
-  // Empty string is valid — it clears the deprecation (undeprecate).
-  if (msg.length === 0) return null;
-
-  if (/\.\s+[A-Z]/.test(msg)) {
-    return (
-      `Deprecation message contains the "period + space + capital letter" pattern that has ` +
-      "triggered 422 Unprocessable Entity on at least one scoped package. " +
-      "The working form uses em-dash and lowercase continuation: " +
-      `e.g. "Renamed to @yawlabs/spend — install that instead". ` +
-      "Pass force: true to bypass this validation."
-    );
-  }
-
   return null;
 }
 

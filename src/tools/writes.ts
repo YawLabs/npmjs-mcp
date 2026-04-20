@@ -12,12 +12,18 @@ import { z } from "zod";
 import {
   type ApiResponse,
   encPkg,
+  encScope,
+  encTeam,
+  encUser,
   maxSatisfying,
   registryDeleteAuth,
   registryGetAuth,
   registryPostAuth,
   registryPutAuth,
   requireAuth,
+  validateScope,
+  validateTeam,
+  validateUsername,
 } from "../api.js";
 import { translateError, validateDeprecationMessage, versionsMatchingRange } from "../errors.js";
 
@@ -50,12 +56,21 @@ async function fetchPackument(pkg: string): Promise<ApiResponse<Packument>> {
 
 /**
  * Parse a team target in the form `@scope:team` or `scope:team` into its components.
- * Returns null if the input doesn't match the required shape — callers should
- * surface a 400 error with the format hint.
+ * Returns a discriminated union — callers should check `'error' in parsed` and return
+ * a 400 with the message when present.
  */
-function parseTeamTarget(target: string): { scope: string; team: string } | null {
+function parseTeamTarget(target: string): { scope: string; team: string } | { error: string } {
   const m = target.match(/^@?([^:]+):(.+)$/);
-  return m ? { scope: m[1], team: m[2] } : null;
+  if (!m) {
+    return { error: `Team must be in the form '@scope:team' (got '${target}').` };
+  }
+  const scope = m[1];
+  const team = m[2];
+  const scopeErr = validateScope(scope);
+  if (scopeErr) return { error: scopeErr };
+  const teamErr = validateTeam(team);
+  if (teamErr) return { error: teamErr };
+  return { scope, team };
 }
 
 /** Highest semver in the list (loose compare, ignoring prereleases). Null if empty. */
@@ -81,10 +96,9 @@ export const writeTools = [
     description:
       "Deprecate a package or specific versions. Shows a warning message on install. " +
       "Uses the HTTP API with NPM_TOKEN, bypassing the CLI auth friction that causes 422 errors " +
-      "on accounts with 2FA. Message format tip: the period-then-capital pattern " +
-      "('... install that instead. Thanks.') has 422'd on at least one scoped package; " +
-      "em-dash form is the known-good workaround. Pass force: true to skip the preflight " +
-      "check if you want the exact message as-is.",
+      "on accounts with 2FA. Registry hard limit: deprecation messages must be <= 1024 characters. " +
+      "If the registry 422s, first verify the semver range matches at least one published version " +
+      "(npm_versions) — range/version mismatches are the most common cause, not message format.",
     annotations: {
       title: "Deprecate package",
       readOnlyHint: false,
@@ -101,21 +115,17 @@ export const writeTools = [
         .string()
         .optional()
         .describe("Semver range. Omit to deprecate ALL versions. Example: '<1.0.0' or '0.3.x'."),
-      force: z.boolean().optional().describe("Bypass message format validation (default: false)."),
     }),
     handler: async (input: {
       name: string;
       message: string;
       versionRange?: string;
-      force?: boolean;
     }) => {
       const authErr = requireAuth();
       if (authErr) return authErr;
 
-      if (!input.force) {
-        const problem = validateDeprecationMessage(input.message);
-        if (problem) return { ok: false, status: 400, error: problem };
-      }
+      const problem = validateDeprecationMessage(input.message);
+      if (problem) return { ok: false, status: 400, error: problem };
 
       const pRes = await fetchPackument(input.name);
       if (!pRes.ok) return translateError(pRes, { pkg: input.name, op: "deprecate (fetch)" });
@@ -514,9 +524,12 @@ export const writeTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
+      const userErr = validateUsername(input.username);
+      if (userErr) return { ok: false, status: 400, error: userErr };
+
       // Resolve the user to get canonical name+email.
       const uRes = await registryGetAuth<{ name: string; email?: string }>(
-        `/-/user/org.couchdb.user:${encodeURIComponent(input.username)}`,
+        `/-/user/org.couchdb.user:${encUser(input.username)}`,
       );
       if (!uRes.ok) return translateError(uRes, { pkg: input.name, op: `owner_add (resolve user ${input.username})` });
       const userRecord = { name: uRes.data!.name, email: uRes.data!.email ?? "" };
@@ -590,6 +603,9 @@ export const writeTools = [
     handler: async (input: { name: string; username: string }) => {
       const authErr = requireAuth();
       if (authErr) return authErr;
+
+      const userErr = validateUsername(input.username);
+      if (userErr) return { ok: false, status: 400, error: userErr };
 
       const pRes = await fetchPackument(input.name);
       if (!pRes.ok) return translateError(pRes, { pkg: input.name, op: "owner_remove (fetch)" });
@@ -746,16 +762,12 @@ export const writeTools = [
       if (authErr) return authErr;
 
       const parsed = parseTeamTarget(input.team);
-      if (!parsed) {
-        return {
-          ok: false,
-          status: 400,
-          error: `Team must be in the form '@scope:team' (got '${input.team}').`,
-        };
+      if ("error" in parsed) {
+        return { ok: false, status: 400, error: parsed.error };
       }
       const { scope, team } = parsed;
 
-      const res = await registryPutAuth(`/-/team/${encodeURIComponent(scope)}/${encodeURIComponent(team)}/package`, {
+      const res = await registryPutAuth(`/-/team/${encScope(scope)}/${encTeam(team)}/package`, {
         package: input.package,
         permissions: input.permissions,
       });
@@ -793,16 +805,12 @@ export const writeTools = [
       if (authErr) return authErr;
 
       const parsed = parseTeamTarget(input.team);
-      if (!parsed) {
-        return {
-          ok: false,
-          status: 400,
-          error: `Team must be in the form '@scope:team' (got '${input.team}').`,
-        };
+      if ("error" in parsed) {
+        return { ok: false, status: 400, error: parsed.error };
       }
       const { scope, team } = parsed;
 
-      const res = await registryDeleteAuth(`/-/team/${encodeURIComponent(scope)}/${encodeURIComponent(team)}/package`, {
+      const res = await registryDeleteAuth(`/-/team/${encScope(scope)}/${encTeam(team)}/package`, {
         package: input.package,
       });
       if (!res.ok) return translateError(res, { pkg: input.package, op: `team_revoke ${input.team}` });
@@ -837,12 +845,12 @@ export const writeTools = [
       if (authErr) return authErr;
 
       const parsed = parseTeamTarget(input.team);
-      if (!parsed) {
-        return { ok: false, status: 400, error: `Team must be in the form '@scope:team' (got '${input.team}').` };
+      if ("error" in parsed) {
+        return { ok: false, status: 400, error: parsed.error };
       }
       const { scope, team } = parsed;
 
-      const res = await registryPutAuth(`/-/org/${encodeURIComponent(scope)}/team`, {
+      const res = await registryPutAuth(`/-/org/${encScope(scope)}/team`, {
         name: team,
         description: input.description,
       });
@@ -857,7 +865,9 @@ export const writeTools = [
   // ───────────────────────────────────────────────────────
   {
     name: "npm_team_delete",
-    description: "Delete a team. Team is passed as '@scope:team'. Revokes all package permissions that team held.",
+    description:
+      "Delete a team. Team is passed as '@scope:team'. Revokes all package permissions that team held. " +
+      "Requires confirm: true — this removes the team and all its package grants in one call.",
     annotations: {
       title: "Delete team",
       readOnlyHint: false,
@@ -867,18 +877,27 @@ export const writeTools = [
     },
     inputSchema: z.object({
       team: z.string().describe("Team in the form '@scope:team'"),
+      confirm: z.literal(true).describe("Must be literally true. Guards against accidental team deletion."),
     }),
-    handler: async (input: { team: string }) => {
+    handler: async (input: { team: string; confirm: true }) => {
       const authErr = requireAuth();
       if (authErr) return authErr;
 
+      if (input.confirm !== true) {
+        return {
+          ok: false,
+          status: 400,
+          error: "team_delete requires confirm: true. This removes the team and all its package grants.",
+        };
+      }
+
       const parsed = parseTeamTarget(input.team);
-      if (!parsed) {
-        return { ok: false, status: 400, error: `Team must be in the form '@scope:team' (got '${input.team}').` };
+      if ("error" in parsed) {
+        return { ok: false, status: 400, error: parsed.error };
       }
       const { scope, team } = parsed;
 
-      const res = await registryDeleteAuth(`/-/team/${encodeURIComponent(scope)}/${encodeURIComponent(team)}`);
+      const res = await registryDeleteAuth(`/-/team/${encScope(scope)}/${encTeam(team)}`);
       if (!res.ok) return translateError(res, { op: `team_delete ${input.team}` });
 
       return { ok: true, status: 200, data: { team: `@${scope}:${team}`, deleted: true } };
@@ -906,13 +925,16 @@ export const writeTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
+      const userErr = validateUsername(input.user);
+      if (userErr) return { ok: false, status: 400, error: userErr };
+
       const parsed = parseTeamTarget(input.team);
-      if (!parsed) {
-        return { ok: false, status: 400, error: `Team must be in the form '@scope:team' (got '${input.team}').` };
+      if ("error" in parsed) {
+        return { ok: false, status: 400, error: parsed.error };
       }
       const { scope, team } = parsed;
 
-      const res = await registryPutAuth(`/-/team/${encodeURIComponent(scope)}/${encodeURIComponent(team)}/user`, {
+      const res = await registryPutAuth(`/-/team/${encScope(scope)}/${encTeam(team)}/user`, {
         user: input.user,
       });
       if (!res.ok) return translateError(res, { op: `team_member_add ${input.team}` });
@@ -942,13 +964,16 @@ export const writeTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
+      const userErr = validateUsername(input.user);
+      if (userErr) return { ok: false, status: 400, error: userErr };
+
       const parsed = parseTeamTarget(input.team);
-      if (!parsed) {
-        return { ok: false, status: 400, error: `Team must be in the form '@scope:team' (got '${input.team}').` };
+      if ("error" in parsed) {
+        return { ok: false, status: 400, error: parsed.error };
       }
       const { scope, team } = parsed;
 
-      const res = await registryDeleteAuth(`/-/team/${encodeURIComponent(scope)}/${encodeURIComponent(team)}/user`, {
+      const res = await registryDeleteAuth(`/-/team/${encScope(scope)}/${encTeam(team)}/user`, {
         user: input.user,
       });
       if (!res.ok) return translateError(res, { op: `team_member_remove ${input.team}` });
@@ -981,12 +1006,17 @@ export const writeTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
+      const orgErr = validateScope(input.org);
+      if (orgErr) return { ok: false, status: 400, error: orgErr };
+      const userErr = validateUsername(input.user);
+      if (userErr) return { ok: false, status: 400, error: userErr };
+
       const org = input.org.replace(/^@/, "");
       const user = input.user.replace(/^@/, "");
       const body: { user: string; role?: string } = { user };
       if (input.role) body.role = input.role;
 
-      const res = await registryPutAuth(`/-/org/${encodeURIComponent(org)}/user`, body);
+      const res = await registryPutAuth(`/-/org/${encScope(org)}/user`, body);
       if (!res.ok) return translateError(res, { op: `org_member_set ${org}/${user}` });
 
       return { ok: true, status: 200, data: { org, user, role: input.role } };
@@ -998,7 +1028,9 @@ export const writeTools = [
   // ───────────────────────────────────────────────────────
   {
     name: "npm_org_member_remove",
-    description: "Remove a user from an org. Their team memberships in that org are also removed.",
+    description:
+      "Remove a user from an org. Their team memberships in that org are also removed. " +
+      "Requires confirm: true — team memberships cascade and cannot be selectively preserved.",
     annotations: {
       title: "Remove org member",
       readOnlyHint: false,
@@ -1009,14 +1041,28 @@ export const writeTools = [
     inputSchema: z.object({
       org: z.string().describe("Organization name"),
       user: z.string().describe("npm username"),
+      confirm: z.literal(true).describe("Must be literally true. Guards against accidental member removal."),
     }),
-    handler: async (input: { org: string; user: string }) => {
+    handler: async (input: { org: string; user: string; confirm: true }) => {
       const authErr = requireAuth();
       if (authErr) return authErr;
 
+      if (input.confirm !== true) {
+        return {
+          ok: false,
+          status: 400,
+          error: "org_member_remove requires confirm: true. Team memberships in the org are also removed.",
+        };
+      }
+
+      const orgErr = validateScope(input.org);
+      if (orgErr) return { ok: false, status: 400, error: orgErr };
+      const userErr = validateUsername(input.user);
+      if (userErr) return { ok: false, status: 400, error: userErr };
+
       const org = input.org.replace(/^@/, "");
       const user = input.user.replace(/^@/, "");
-      const res = await registryDeleteAuth(`/-/org/${encodeURIComponent(org)}/user`, { user });
+      const res = await registryDeleteAuth(`/-/org/${encScope(org)}/user`, { user });
       if (!res.ok) return translateError(res, { op: `org_member_remove ${org}/${user}` });
 
       return { ok: true, status: 200, data: { org, removedUser: user } };
@@ -1031,7 +1077,8 @@ export const writeTools = [
   {
     name: "npm_token_revoke",
     description:
-      "Revoke an access token by its key (UUID from npm_tokens). " +
+      "Revoke an access token by its key (UUID from npm_tokens). Requires confirm: true. " +
+      "Revoking the token currently in use by NPM_TOKEN will break the next call. " +
       "Creating tokens is NOT exposed because the endpoint requires the user password — " +
       "create via https://www.npmjs.com/settings/~/tokens instead.",
     annotations: {
@@ -1043,10 +1090,21 @@ export const writeTools = [
     },
     inputSchema: z.object({
       tokenKey: z.string().describe("Token key (UUID shown by npm_tokens)"),
+      confirm: z
+        .literal(true)
+        .describe("Must be literally true. Guards against revoking the token you're authenticating with."),
     }),
-    handler: async (input: { tokenKey: string }) => {
+    handler: async (input: { tokenKey: string; confirm: true }) => {
       const authErr = requireAuth();
       if (authErr) return authErr;
+
+      if (input.confirm !== true) {
+        return {
+          ok: false,
+          status: 400,
+          error: "token_revoke requires confirm: true. Revoking the token in NPM_TOKEN will break the next call.",
+        };
+      }
 
       const res = await registryDeleteAuth(`/-/npm/v1/tokens/token/${encodeURIComponent(input.tokenKey)}`);
       if (!res.ok) return translateError(res, { op: "token_revoke" });

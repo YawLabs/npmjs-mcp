@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { encPkg, maxSatisfying, validatePackageName } from "./api.js";
+import { after, afterEach, describe, it } from "node:test";
+import {
+  encPkg,
+  encScope,
+  encTeam,
+  encUser,
+  maxSatisfying,
+  registryGet,
+  validatePackageName,
+  validateScope,
+  validateTeam,
+  validateUsername,
+} from "./api.js";
 
 // ─── maxSatisfying ───
 
@@ -190,5 +201,145 @@ describe("encPkg", () => {
     assert.throws(() => encPkg(""), /empty/i);
     assert.throws(() => encPkg("foo/bar"), /Invalid/);
     assert.throws(() => encPkg("../evil"), /Invalid/);
+  });
+});
+
+// ─── Scope / username / team validators and encoders ───
+
+describe("validateScope / validateUsername / validateTeam", () => {
+  it("accepts well-formed idents (with and without leading @ where applicable)", () => {
+    assert.equal(validateScope("yawlabs"), null);
+    assert.equal(validateScope("@yawlabs"), null);
+    assert.equal(validateUsername("alice"), null);
+    assert.equal(validateUsername("@alice"), null);
+    assert.equal(validateTeam("devs"), null);
+  });
+
+  it("rejects empty, CRLF, and path-traversal idents", () => {
+    for (const v of ["", "bad\nident", "bad\r\nident", "../evil", "a/b"]) {
+      assert.ok(validateScope(v), `validateScope should reject ${JSON.stringify(v)}`);
+      assert.ok(validateUsername(v), `validateUsername should reject ${JSON.stringify(v)}`);
+      assert.ok(validateTeam(v), `validateTeam should reject ${JSON.stringify(v)}`);
+    }
+  });
+
+  it("rejects leading dot/underscore and non-ASCII", () => {
+    assert.ok(validateScope(".hidden"));
+    assert.ok(validateScope("_private"));
+    assert.ok(validateUsername(".hidden"));
+  });
+});
+
+describe("encScope / encUser / encTeam", () => {
+  it("strip leading @ and URL-encode the remainder", () => {
+    assert.equal(encScope("@yawlabs"), "yawlabs");
+    assert.equal(encUser("@alice"), "alice");
+    assert.equal(encTeam("devs"), "devs");
+  });
+
+  it("throw on invalid input (would otherwise build malformed URLs)", () => {
+    assert.throws(() => encScope("a/b"), /Invalid/);
+    assert.throws(() => encUser("bad\nident"), /Invalid/);
+    assert.throws(() => encTeam(""), /empty/i);
+  });
+});
+
+// ─── Retry/backoff + env-driven base URL ───
+
+const originalFetch = globalThis.fetch;
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+  delete process.env.NPM_REGISTRY;
+  delete process.env.NPM_RETRY_BACKOFF_MS;
+});
+after(() => {
+  globalThis.fetch = originalFetch;
+});
+
+describe("retry/backoff on transient failures", () => {
+  it("retries 503 up to MAX_RETRIES and eventually succeeds", async () => {
+    // Zero backoff so the test isn't slow.
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    const calls: string[] = [];
+    let i = 0;
+    globalThis.fetch = (async () => {
+      i++;
+      if (i < 3) {
+        calls.push(`503-${i}`);
+        return new Response("service unavailable", { status: 503 });
+      }
+      calls.push(`200-${i}`);
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const res = await registryGet("/test");
+    assert.equal(res.ok, true);
+    assert.equal(res.status, 200);
+    assert.equal(calls.length, 3);
+  });
+
+  it("gives up after MAX_RETRIES and returns the last failure", async () => {
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    let i = 0;
+    globalThis.fetch = (async () => {
+      i++;
+      return new Response("still unavailable", { status: 503 });
+    }) as typeof fetch;
+
+    const res = await registryGet("/test");
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 503);
+    // MAX_RETRIES = 2 → total of 3 attempts
+    assert.equal(i, 3);
+  });
+
+  it("does NOT retry non-retryable statuses (e.g. 404)", async () => {
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    let i = 0;
+    globalThis.fetch = (async () => {
+      i++;
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    const res = await registryGet("/test");
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 404);
+    assert.equal(i, 1);
+  });
+});
+
+describe("NPM_REGISTRY env override", () => {
+  it("routes registry calls through the override URL", async () => {
+    process.env.NPM_REGISTRY = "https://registry.example.internal";
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      seen.push(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    await registryGet("/express");
+    assert.equal(seen.length, 1);
+    assert.ok(seen[0].startsWith("https://registry.example.internal/"));
+  });
+
+  it("strips trailing slashes from the override URL", async () => {
+    process.env.NPM_REGISTRY = "https://registry.example.internal////";
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      seen.push(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    await registryGet("/express");
+    assert.equal(seen[0], "https://registry.example.internal/express");
   });
 });

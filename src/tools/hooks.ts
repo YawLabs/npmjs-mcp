@@ -5,6 +5,9 @@
  *   - "@scope/pkg" or "pkg"  → type: package
  *   - "@scope"               → type: scope
  *   - "~user"                → type: owner (name stripped of leading ~)
+ *
+ * Response data is sanitized to strip any `secret` fields the registry might echo back,
+ * so the HMAC secret never flows into tool output (and from there into agent transcripts).
  */
 
 import { z } from "zod";
@@ -17,13 +20,29 @@ function classifyHookTarget(target: string): { type: "package" | "scope" | "owne
   return { type: "package", name: target };
 }
 
+/** Recursively remove any `secret` fields so HMAC secrets never appear in tool output. */
+function stripSecrets<T>(data: T): T {
+  if (Array.isArray(data)) {
+    return data.map((item) => stripSecrets(item)) as unknown as T;
+  }
+  if (data !== null && typeof data === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(data)) {
+      if (k === "secret") continue;
+      out[k] = stripSecrets(v);
+    }
+    return out as T;
+  }
+  return data;
+}
+
 export const hookTools = [
   {
     name: "npm_hook_add",
     description:
       "Create a registry webhook. Target is 'pkg' or '@scope/pkg' for a package, '@scope' for a scope, " +
       "or '~user' for a user's packages. Endpoint is the HTTPS URL to POST events to; " +
-      "secret is used to HMAC-sign payloads.",
+      "secret is used to HMAC-sign payloads. The secret is never echoed back in tool responses.",
     annotations: {
       title: "Add webhook",
       readOnlyHint: false,
@@ -49,13 +68,13 @@ export const hookTools = [
       });
       if (!res.ok) return translateError(res, { op: `hook_add ${input.target}` });
 
-      return { ok: true, status: 200, data: res.data };
+      return { ok: true, status: 200, data: stripSecrets(res.data) };
     },
   },
 
   {
     name: "npm_hook_list",
-    description: "List webhooks. Optionally filter by package name.",
+    description: "List webhooks. Optionally filter by package name. Secrets are redacted from responses.",
     annotations: {
       title: "List webhooks",
       readOnlyHint: true,
@@ -81,13 +100,13 @@ export const hookTools = [
       const res = await registryGetAuth(`/-/npm/v1/hooks${q ? `?${q}` : ""}`);
       if (!res.ok) return translateError(res, { op: "hook_list" });
 
-      return { ok: true, status: 200, data: res.data };
+      return { ok: true, status: 200, data: stripSecrets(res.data) };
     },
   },
 
   {
     name: "npm_hook_get",
-    description: "Get a single webhook by its ID.",
+    description: "Get a single webhook by its ID. The stored secret is redacted from the response.",
     annotations: {
       title: "Get webhook",
       readOnlyHint: true,
@@ -105,13 +124,13 @@ export const hookTools = [
       const res = await registryGetAuth(`/-/npm/v1/hooks/hook/${encodeURIComponent(input.id)}`);
       if (!res.ok) return translateError(res, { op: `hook_get ${input.id}` });
 
-      return { ok: true, status: 200, data: res.data };
+      return { ok: true, status: 200, data: stripSecrets(res.data) };
     },
   },
 
   {
     name: "npm_hook_update",
-    description: "Update a webhook's endpoint and/or secret.",
+    description: "Update a webhook's endpoint and/or secret. The returned hook object has the secret redacted.",
     annotations: {
       title: "Update webhook",
       readOnlyHint: false,
@@ -134,7 +153,7 @@ export const hookTools = [
       });
       if (!res.ok) return translateError(res, { op: `hook_update ${input.id}` });
 
-      return { ok: true, status: 200, data: res.data };
+      return { ok: true, status: 200, data: stripSecrets(res.data) };
     },
   },
 

@@ -135,3 +135,42 @@ describe("npm_hook_get / update / remove", () => {
     assert.match(lastRequest!.url, /\/hooks\/hook\/h1$/);
   });
 });
+
+describe("hook response sanitization", () => {
+  it("strips `secret` from hook_add response data (scalar)", async () => {
+    mockFetch(200, { id: "h1", secret: "sup3r-s3cr3t", endpoint: "https://example.com/h" });
+    const tool = findTool("npm_hook_add");
+    const result = (await tool.handler({
+      target: "@yawlabs/pkg",
+      endpoint: "https://example.com/h",
+      secret: "sup3r-s3cr3t",
+    })) as { ok: boolean; data: Record<string, unknown> };
+    assert.equal(result.ok, true);
+    assert.ok(!("secret" in result.data));
+    assert.equal(result.data.id, "h1");
+    assert.equal(result.data.endpoint, "https://example.com/h");
+  });
+
+  it("strips `secret` from nested objects and arrays in hook_list", async () => {
+    mockFetch(200, {
+      objects: [
+        { id: "h1", secret: "aaa", endpoint: "https://a" },
+        { id: "h2", secret: "bbb", endpoint: "https://b", nested: { secret: "ccc", keep: "this" } },
+      ],
+      total: 2,
+    });
+    const tool = findTool("npm_hook_list");
+    const result = (await tool.handler({})) as {
+      ok: boolean;
+      data: { objects: Array<Record<string, unknown>>; total: number };
+    };
+    assert.equal(result.ok, true);
+    assert.equal(result.data.total, 2);
+    for (const obj of result.data.objects) {
+      assert.ok(!("secret" in obj), `secret should be stripped from ${JSON.stringify(obj)}`);
+    }
+    const nested = result.data.objects[1].nested as Record<string, unknown>;
+    assert.ok(!("secret" in nested));
+    assert.equal(nested.keep, "this");
+  });
+});

@@ -1,19 +1,29 @@
 /**
  * npm registry API client — supports both public (read-only) and authenticated endpoints.
  *
- * Authentication is optional via the NPM_TOKEN environment variable.
- * When set, authenticated endpoints (whoami, tokens, org management, etc.) become available.
+ * Config (all optional):
+ *   - NPM_TOKEN                — bearer token for authenticated endpoints
+ *   - NPM_REGISTRY             — alternate registry URL (defaults to https://registry.npmjs.org)
+ *   - NPM_REQUEST_TIMEOUT_MS   — per-request timeout (defaults to 30000)
+ *   - NPM_RETRY_BACKOFF_MS     — base backoff between retries (defaults to 500)
+ *   - DEBUG=npmjs-mcp          — emit one-line request traces on stderr (tokens never logged)
  *
- * Three base URLs:
- *   - registry.npmjs.org  — package metadata, search, security, auth
- *   - api.npmjs.org       — download statistics
- *   - replicate.npmjs.com — CouchDB changes feed
+ * Base URLs:
+ *   - registry             — package metadata, search, security, auth (override via NPM_REGISTRY)
+ *   - api.npmjs.org        — download statistics (npm-specific, not overrideable)
+ *   - replicate.npmjs.com  — CouchDB changes feed (npm-specific, not overrideable)
+ *
+ * Transient failures (429, 502, 503, 504) retry up to 2 times with exponential backoff,
+ * honoring the Retry-After header when present. Network errors retry on the same schedule.
  */
 
-const REGISTRY_URL = "https://registry.npmjs.org";
+const DEFAULT_REGISTRY_URL = "https://registry.npmjs.org";
 const DOWNLOADS_URL = "https://api.npmjs.org";
 const REPLICATE_URL = "https://replicate.npmjs.com";
-const REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_BACKOFF_MS = 500;
+const MAX_RETRIES = 2;
+const RETRYABLE_STATUSES = new Set([429, 502, 503, 504]);
 
 export interface ApiResponse<T = unknown> {
   ok: boolean;
@@ -22,24 +32,47 @@ export interface ApiResponse<T = unknown> {
   error?: string;
 }
 
-/**
- * npm package-name rules we enforce (permissive but bounded):
- *   - Max 214 characters (registry limit).
- *   - First char must be alphanumeric (no leading `.` or `_`).
- *   - Remaining chars: alnum, `-`, `_`, `.`.
- *   - Scoped form: `@<scope>/<name>` where both `<scope>` and `<name>` follow the above.
- *
- * Intentionally permissive (allows mixed case) to not reject legacy packages; the strict
- * lowercase-only rule applies to NEW packages but old ones exist in the registry with
- * uppercase characters.
- */
+// ─── Env-driven config ──────────────────────────────────
+
+function getRegistryUrl(): string {
+  return (process.env.NPM_REGISTRY || DEFAULT_REGISTRY_URL).replace(/\/+$/, "");
+}
+
+function getTimeoutMs(): number {
+  const raw = process.env.NPM_REQUEST_TIMEOUT_MS;
+  if (!raw) return DEFAULT_TIMEOUT_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TIMEOUT_MS;
+}
+
+function getBackoffMs(attempt: number): number {
+  const raw = process.env.NPM_RETRY_BACKOFF_MS;
+  const parsed = raw !== undefined ? Number(raw) : Number.NaN;
+  const base = Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_BACKOFF_MS;
+  return base * 2 ** attempt;
+}
+
+function debugEnabled(): boolean {
+  const v = process.env.DEBUG;
+  return v === "npmjs-mcp" || v === "*";
+}
+
+function debug(msg: string): void {
+  if (debugEnabled()) console.error(`[npmjs-mcp] ${msg}`);
+}
+
+// ─── Identifier validation ──────────────────────────────
+// Applied at tool boundaries so malformed input surfaces an actionable error
+// client-side instead of an opaque 404 from the registry.
+
 const PACKAGE_NAME_MAX_LENGTH = 214;
 const PACKAGE_NAME_PATTERN = /^(?:@[a-zA-Z0-9][a-zA-Z0-9\-_.]*\/)?[a-zA-Z0-9][a-zA-Z0-9\-_.]*$/;
+const IDENT_MAX_LENGTH = 214;
+const IDENT_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9\-_.]*$/;
 
 /**
- * Validate an npm package name at tool boundaries. Returns an error message if invalid,
- * null if safe to pass to the registry. Catches typos (empty strings, newlines, bad scope
- * format) before they hit the wire and produce opaque 404s.
+ * Validate an npm package name. Returns an error message if invalid, null if safe.
+ * Intentionally permissive (allows mixed case) to accept legacy uppercase packages.
  */
 export function validatePackageName(name: string): string | null {
   if (typeof name !== "string" || name.length === 0) return "Package name is empty";
@@ -52,10 +85,33 @@ export function validatePackageName(name: string): string | null {
   return null;
 }
 
+function validateIdent(value: string, label: string): string | null {
+  if (typeof value !== "string" || value.length === 0) return `${label} is empty`;
+  if (value.length > IDENT_MAX_LENGTH) return `${label} exceeds ${IDENT_MAX_LENGTH} characters`;
+  if (!IDENT_PATTERN.test(value)) {
+    return `Invalid ${label.toLowerCase()} '${value}'. Must start alphanumeric and contain only [a-zA-Z0-9-_.].`;
+  }
+  return null;
+}
+
+/** Validate an npm scope or org name. Accepts the leading `@` optionally. */
+export function validateScope(scope: string): string | null {
+  return validateIdent(scope.replace(/^@/, ""), "Scope");
+}
+
+/** Validate an npm username. Accepts the leading `@` optionally. */
+export function validateUsername(username: string): string | null {
+  return validateIdent(username.replace(/^@/, ""), "Username");
+}
+
+/** Validate an npm team name (no `@` prefix). */
+export function validateTeam(team: string): string | null {
+  return validateIdent(team, "Team name");
+}
+
 /**
- * URL-encode a package name for use in registry paths. Throws on invalid input so the
- * malformed name never reaches the wire. Scoped packages (`@scope/name`) are preserved
- * with an unencoded `@` prefix as required by the registry.
+ * URL-encode a package name for use in registry paths. Throws on invalid input.
+ * Scoped packages are preserved with an unencoded `@` prefix as the registry requires.
  */
 export function encPkg(name: string): string {
   const err = validatePackageName(name);
@@ -63,12 +119,33 @@ export function encPkg(name: string): string {
   return name.startsWith("@") ? `@${encodeURIComponent(name.slice(1))}` : encodeURIComponent(name);
 }
 
-/** Check whether an NPM_TOKEN is configured. */
+/** URL-encode a scope (without the `@` prefix). Throws on invalid input. */
+export function encScope(scope: string): string {
+  const err = validateScope(scope);
+  if (err) throw new Error(err);
+  return encodeURIComponent(scope.replace(/^@/, ""));
+}
+
+/** URL-encode a username (without the `@` prefix). Throws on invalid input. */
+export function encUser(username: string): string {
+  const err = validateUsername(username);
+  if (err) throw new Error(err);
+  return encodeURIComponent(username.replace(/^@/, ""));
+}
+
+/** URL-encode a team name. Throws on invalid input. */
+export function encTeam(team: string): string {
+  const err = validateTeam(team);
+  if (err) throw new Error(err);
+  return encodeURIComponent(team);
+}
+
+// ─── Auth ──────────────────────────────────────────────
+
 export function isAuthenticated(): boolean {
   return !!process.env.NPM_TOKEN;
 }
 
-/** Return an error response when auth is required but no token is set. */
 export function requireAuth<T = unknown>(): ApiResponse<T> | null {
   if (isAuthenticated()) return null;
   return {
@@ -84,6 +161,21 @@ export function requireAuth<T = unknown>(): ApiResponse<T> | null {
 function authHeaders(): Record<string, string> {
   const token = process.env.NPM_TOKEN;
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+// ─── HTTP request with retry/backoff on transient failures ────
+
+function parseRetryAfter(header: string | null): number | null {
+  if (!header) return null;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  const date = Date.parse(header);
+  if (!Number.isNaN(date)) return Math.max(0, date - Date.now());
+  return null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function request<T = unknown>(
@@ -105,79 +197,104 @@ async function request<T = unknown>(
 
   const url = `${baseUrl}${path}`;
 
-  try {
-    const res = await fetch(url, {
-      method,
-      headers,
-      body: fetchBody,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const started = Date.now();
+    try {
+      const res = await fetch(url, {
+        method,
+        headers,
+        body: fetchBody,
+        signal: AbortSignal.timeout(getTimeoutMs()),
+      });
 
-    if (!res.ok) {
-      const errorBody = await res.text();
-      return { ok: false, status: res.status, error: errorBody };
+      if (RETRYABLE_STATUSES.has(res.status) && attempt < MAX_RETRIES) {
+        const retryAfter = parseRetryAfter(res.headers.get("Retry-After"));
+        const waitMs = retryAfter ?? getBackoffMs(attempt);
+        debug(`${method} ${url} -> ${res.status} retry in ${waitMs}ms (attempt ${attempt + 1}/${MAX_RETRIES + 1})`);
+        // Drain body to free the connection before retrying
+        try {
+          await res.text();
+        } catch {
+          // ignore — drain is best-effort
+        }
+        await sleep(waitMs);
+        continue;
+      }
+
+      const elapsed = Date.now() - started;
+
+      if (!res.ok) {
+        const errorBody = await res.text();
+        debug(`${method} ${url} -> ${res.status} ${elapsed}ms`);
+        return { ok: false, status: res.status, error: errorBody };
+      }
+
+      if (res.status === 204 || res.headers.get("content-length") === "0") {
+        debug(`${method} ${url} -> ${res.status} ${elapsed}ms`);
+        return { ok: true, status: res.status };
+      }
+
+      const data = (await res.json()) as T;
+      debug(`${method} ${url} -> ${res.status} ${elapsed}ms`);
+      return { ok: true, status: res.status, data };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (attempt < MAX_RETRIES) {
+        const waitMs = getBackoffMs(attempt);
+        debug(`${method} ${url} -> network error retry in ${waitMs}ms (${message})`);
+        await sleep(waitMs);
+        continue;
+      }
+      debug(`${method} ${url} -> network error: ${message}`);
+      return { ok: false, status: 0, error: message };
     }
-
-    if (res.status === 204 || res.headers.get("content-length") === "0") {
-      return { ok: true, status: res.status };
-    }
-
-    const data = (await res.json()) as T;
-    return { ok: true, status: res.status, data };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, status: 0, error: message };
   }
+  // Unreachable — loop body always returns or continues within bounds
+  return { ok: false, status: 0, error: "unreachable" };
 }
 
-// ─── Registry API (registry.npmjs.org) — public ───
+// ─── Registry API (public) ──────────────────────────────
 
 /** Fetch full packument (all versions, readme, maintainers, etc). */
 export function registryGet<T = unknown>(path: string): Promise<ApiResponse<T>> {
-  return request<T>(REGISTRY_URL, path);
+  return request<T>(getRegistryUrl(), path);
 }
 
 /** Fetch abbreviated packument (deps-only, much smaller). */
 export function registryGetAbbreviated<T = unknown>(path: string): Promise<ApiResponse<T>> {
-  return request<T>(REGISTRY_URL, path, {
+  return request<T>(getRegistryUrl(), path, {
     headers: { Accept: "application/vnd.npm.install-v1+json" },
   });
 }
 
 /** POST to registry (security audit endpoints). */
 export function registryPost<T = unknown>(path: string, body: unknown): Promise<ApiResponse<T>> {
-  return request<T>(REGISTRY_URL, path, { method: "POST", body });
+  return request<T>(getRegistryUrl(), path, { method: "POST", body });
 }
 
-// ─── Registry API — authenticated ───
+// ─── Registry API (authenticated) ───────────────────────
 
-/** GET with Bearer token (whoami, tokens, org endpoints, etc). */
 export function registryGetAuth<T = unknown>(path: string): Promise<ApiResponse<T>> {
-  return request<T>(REGISTRY_URL, path, { headers: authHeaders() });
+  return request<T>(getRegistryUrl(), path, { headers: authHeaders() });
 }
 
-/** POST with Bearer token. */
 export function registryPostAuth<T = unknown>(path: string, body: unknown): Promise<ApiResponse<T>> {
-  return request<T>(REGISTRY_URL, path, { method: "POST", body, headers: authHeaders() });
+  return request<T>(getRegistryUrl(), path, { method: "POST", body, headers: authHeaders() });
 }
 
-/** PUT with Bearer token. */
 export function registryPutAuth<T = unknown>(path: string, body: unknown): Promise<ApiResponse<T>> {
-  return request<T>(REGISTRY_URL, path, { method: "PUT", body, headers: authHeaders() });
+  return request<T>(getRegistryUrl(), path, { method: "PUT", body, headers: authHeaders() });
 }
 
-/** DELETE with Bearer token. Optional body for team/org user removal. */
 export function registryDeleteAuth<T = unknown>(path: string, body?: unknown): Promise<ApiResponse<T>> {
-  return request<T>(REGISTRY_URL, path, { method: "DELETE", body, headers: authHeaders() });
+  return request<T>(getRegistryUrl(), path, { method: "DELETE", body, headers: authHeaders() });
 }
 
-// ─── Downloads API (api.npmjs.org) ───
+// ─── Downloads / Replicate (npm-specific, not overrideable) ───
 
 export function downloadsGet<T = unknown>(path: string): Promise<ApiResponse<T>> {
   return request<T>(DOWNLOADS_URL, path);
 }
-
-// ─── Replicate API (replicate.npmjs.com) ───
 
 export function replicateGet<T = unknown>(path: string): Promise<ApiResponse<T>> {
   return request<T>(REPLICATE_URL, path);

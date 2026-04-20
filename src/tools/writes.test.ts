@@ -125,10 +125,11 @@ describe("translateError", () => {
     assert.match(out.error!, /scoped packages require the @scope\//);
   });
 
-  it("422 translates with em-dash / period-capital / CLI fallback guidance", () => {
+  it("422 translates with semver, 1024-char, and CLI fallback guidance", () => {
     const out = translateError({ ok: false, status: 422, error: "Unprocessable" }, { pkg: "@test/pkg" });
     assert.match(out.error!, /422/);
-    assert.match(out.error!, /em-dash form/);
+    assert.match(out.error!, /semver range/);
+    assert.match(out.error!, /1024/);
     assert.match(out.error!, /npm login --auth-type=web/);
   });
 
@@ -148,10 +149,11 @@ describe("validateDeprecationMessage", () => {
     assert.equal(validateDeprecationMessage(""), null);
   });
 
-  it("rejects period-capital pattern", () => {
-    const err = validateDeprecationMessage("Renamed to @yawlabs/spend. Install that instead.");
-    assert.ok(err);
-    assert.match(err!, /period \+ space \+ capital letter/);
+  it("accepts period-capital patterns (they do not 422 in practice)", () => {
+    // The earlier heuristic flagged this shape after a single 422; follow-up diagnosis
+    // in issue #2 confirmed the 422 was caused by a wildcard version mismatch, not
+    // message formatting. The check produced false positives and was removed.
+    assert.equal(validateDeprecationMessage("Renamed to @yawlabs/spend. Install that instead."), null);
   });
 
   it("rejects messages over 1024 characters", () => {
@@ -212,17 +214,7 @@ describe("npm_deprecate", () => {
     assert.ok(result.data.affectedVersions.includes("0.2.0"));
   });
 
-  it("rejects period-capital message unless force: true", async () => {
-    const tool = findTool(writeTools, "npm_deprecate");
-    const result = (await tool.handler({
-      name: "@test/pkg",
-      message: "Renamed. Install instead.",
-    })) as { ok: boolean; error: string };
-    assert.equal(result.ok, false);
-    assert.match(result.error, /period \+ space \+ capital/);
-  });
-
-  it("accepts period-capital message with force: true", async () => {
+  it("accepts period-capital message without force (check removed)", async () => {
     mockFetchSequence([
       { status: 200, body: samplePackument() },
       { status: 200, body: {} },
@@ -231,9 +223,19 @@ describe("npm_deprecate", () => {
     const result = (await tool.handler({
       name: "@test/pkg",
       message: "Renamed. Install instead.",
-      force: true,
     })) as { ok: boolean };
     assert.equal(result.ok, true);
+  });
+
+  it("rejects messages over 1024 characters", async () => {
+    const tool = findTool(writeTools, "npm_deprecate");
+    const result = (await tool.handler({
+      name: "@test/pkg",
+      message: "a".repeat(1025),
+    })) as { ok: boolean; status: number; error: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.match(result.error, /1024/);
   });
 
   it("returns 400 when no versions match range", async () => {
@@ -488,9 +490,21 @@ describe("npm_team_delete", () => {
   it("DELETEs /-/team/<scope>/<team>", async () => {
     mockFetch(200, {});
     const tool = findTool(writeTools, "npm_team_delete");
-    await tool.handler({ team: "@yawlabs:devs" });
+    await tool.handler({ team: "@yawlabs:devs", confirm: true });
     assert.equal(lastRequest!.method, "DELETE");
     assert.match(lastRequest!.url, /\/-\/team\/yawlabs\/devs$/);
+  });
+
+  it("requires confirm: true", async () => {
+    const tool = findTool(writeTools, "npm_team_delete");
+    // biome-ignore lint/suspicious/noExplicitAny: deliberately bypassing types to test runtime guard
+    const result = (await (tool.handler as any)({
+      team: "@yawlabs:devs",
+      confirm: false,
+    })) as { ok: boolean; status: number; error: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.match(result.error, /confirm: true/);
   });
 });
 
@@ -539,9 +553,34 @@ describe("npm_org_member_remove", () => {
   it("DELETEs /-/org/<org>/user with user body", async () => {
     mockFetch(200, {});
     const tool = findTool(writeTools, "npm_org_member_remove");
-    await tool.handler({ org: "yawlabs", user: "bob" });
+    await tool.handler({ org: "yawlabs", user: "bob", confirm: true });
     assert.equal(lastRequest!.method, "DELETE");
     assert.deepEqual(lastRequest!.body, { user: "bob" });
+  });
+
+  it("requires confirm: true", async () => {
+    const tool = findTool(writeTools, "npm_org_member_remove");
+    // biome-ignore lint/suspicious/noExplicitAny: deliberately bypassing types to test runtime guard
+    const result = (await (tool.handler as any)({
+      org: "yawlabs",
+      user: "bob",
+      confirm: false,
+    })) as { ok: boolean; status: number; error: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.match(result.error, /confirm: true/);
+  });
+
+  it("rejects malformed org (identifier validation)", async () => {
+    const tool = findTool(writeTools, "npm_org_member_remove");
+    const result = (await tool.handler({
+      org: "bad\norg",
+      user: "bob",
+      confirm: true,
+    })) as { ok: boolean; status: number; error: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.match(result.error, /scope/i);
   });
 });
 
@@ -551,9 +590,21 @@ describe("npm_token_revoke", () => {
   it("DELETEs /-/npm/v1/tokens/token/<key>", async () => {
     mockFetch(200, {});
     const tool = findTool(writeTools, "npm_token_revoke");
-    await tool.handler({ tokenKey: "abc-123" });
+    await tool.handler({ tokenKey: "abc-123", confirm: true });
     assert.equal(lastRequest!.method, "DELETE");
     assert.match(lastRequest!.url, /\/-\/npm\/v1\/tokens\/token\/abc-123$/);
+  });
+
+  it("requires confirm: true", async () => {
+    const tool = findTool(writeTools, "npm_token_revoke");
+    // biome-ignore lint/suspicious/noExplicitAny: deliberately bypassing types to test runtime guard
+    const result = (await (tool.handler as any)({
+      tokenKey: "abc-123",
+      confirm: false,
+    })) as { ok: boolean; status: number; error: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.match(result.error, /confirm: true/);
   });
 });
 

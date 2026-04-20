@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Dev dependencies upgraded: Biome 1.9.4 → 2.4.12, TypeScript 5.9.3 → 6.0.3, Zod 3.25.76 → 4.3.6, @types/node 22 → 25. Biome config migrated to v2 schema (`organizeImports` moved under `assist.actions.source`, `files.ignore` → `files.includes`). `tsconfig.json` now sets `types: ["node"]` explicitly (TS 6 no longer auto-includes ambient node types). `z.record()` calls updated to the Zod 4 two-argument form.
+- Upgraded CI actions: `actions/checkout@v4` → `v6`, `actions/setup-node@v4` → `v6`.
+- Dependabot config restricted to minor/patch grouping so future major dev-dep bumps arrive as individual PRs.
+
+### Fixed
+- Release workflow's post-publish smoke test now runs `npx` from `runner.temp` instead of the checkout root, avoiding a false negative where npx resolved the repo's own `bin` entry instead of installing the published tarball.
+- Windows CI parity: added `.gitattributes` to force LF line endings so Biome's format check passes identically on Ubuntu and Windows, and switched the `test` script to an explicit file list (PowerShell doesn't expand `dist/**/*.test.js` and Node <22's `--test` doesn't glob either).
+
+## [0.10.0] — 2026-04-20
+
 ### Added
 - Alternate registry support via `NPM_REGISTRY` env var (defaults to `https://registry.npmjs.org`).
 - Per-request timeout via `NPM_REQUEST_TIMEOUT_MS` (default 30000).

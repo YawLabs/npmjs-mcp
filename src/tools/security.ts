@@ -17,7 +17,7 @@ export const securityTools = [
     },
     inputSchema: z.object({
       packages: z
-        .record(z.array(z.string()))
+        .record(z.string(), z.array(z.string()))
         .describe('Object mapping package names to arrays of version strings, e.g. {"lodash": ["4.17.20"]}'),
     }),
     handler: async (input: { packages: Record<string, string[]> }) => {
@@ -72,7 +72,7 @@ export const securityTools = [
       name: z.string().describe("Project name"),
       version: z.string().optional().describe("Project version (default: '1.0.0')"),
       dependencies: z
-        .record(z.string())
+        .record(z.string(), z.string())
         .describe('Dependencies to audit as { "package": "version" }, e.g. { "express": "4.17.1" }'),
     }),
     handler: async (input: { name: string; version?: string; dependencies: Record<string, string> }) => {

@@ -30,7 +30,7 @@ function mockFetchSequence(responses: Array<{ status: number; body: unknown }>) 
         headers[k] = v;
       }
     }
-    let body: unknown = undefined;
+    let body: unknown;
     if (init?.body) {
       const raw = init.body.toString();
       try {

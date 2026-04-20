@@ -116,11 +116,7 @@ export const writeTools = [
         .optional()
         .describe("Semver range. Omit to deprecate ALL versions. Example: '<1.0.0' or '0.3.x'."),
     }),
-    handler: async (input: {
-      name: string;
-      message: string;
-      versionRange?: string;
-    }) => {
+    handler: async (input: { name: string; message: string; versionRange?: string }) => {
       const authErr = requireAuth();
       if (authErr) return authErr;
 

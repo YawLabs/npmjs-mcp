@@ -15,7 +15,7 @@ function mockFetch(status = 200, responseData: unknown = {}) {
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const method = init?.method ?? "GET";
-    let body: unknown = undefined;
+    let body: unknown;
     if (init?.body) {
       const raw = init.body.toString();
       try {

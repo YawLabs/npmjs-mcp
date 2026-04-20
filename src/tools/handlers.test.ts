@@ -37,7 +37,7 @@ function mockFetch(status = 200, responseData: unknown = {}) {
         headers[k] = v;
       }
     }
-    let body: unknown = undefined;
+    let body: unknown;
     if (init?.body) {
       const raw = init.body.toString();
       try {
@@ -70,7 +70,7 @@ function mockFetchMulti(routes: Record<string, unknown>, fallbackStatus = 200) {
         headers[k] = v;
       }
     }
-    let body: unknown = undefined;
+    let body: unknown;
     if (init?.body) {
       const raw = init.body.toString();
       try {

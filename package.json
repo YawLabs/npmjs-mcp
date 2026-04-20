@@ -44,12 +44,12 @@
     "@hono/node-server": "^1.19.13"
   },
   "devDependencies": {
-    "@biomejs/biome": "^1.9.4",
+    "@biomejs/biome": "^2.4.12",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@types/node": "^22.15.2",
+    "@types/node": "^25.6.0",
     "esbuild": "^0.28.0",
-    "typescript": "^5.8.3",
-    "zod": "^3.24.4"
+    "typescript": "^6.0.3",
+    "zod": "^4.3.6"
   },
   "engines": {
     "node": ">=18"

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `maxSatisfying` no longer leaks prereleases into hyphen ranges. The prerelease filter used to check `sub.includes("-")`, which matched the hyphen-range separator (`1.0.0 - 2.0.0`) and let `2.0.0-beta.1` through. Replaced with a prerelease-tag regex (`/\d+\.\d+\.\d+-/`) that only matches a dash attached to a version.
+- `npm_downloads_bulk` now returns a 400 with an actionable message when any scoped package is passed. The downloads bulk endpoint silently 404s on scoped names; previously that surfaced as a confusing "Not found".
+- `npm_org_member_set` no longer echoes `role: undefined` in the response when the caller omitted `role`. The field is now simply absent, matching the documented "omit role to keep existing role" semantics.
+
+### Changed
+- Identifier validation extended to the four remaining orgs.ts read-only tools (`npm_org_members`, `npm_org_packages`, `npm_org_teams`, `npm_team_packages`). Malformed `org`/`team` now returns a 400 client-side instead of hitting the registry and producing an opaque 404. Matches the pattern already used by `npm_team_members`.
+- Dist-tag names are now validated before `npm_dist_tag_set` / `npm_dist_tag_remove` build the URL. Empty or malformed tags return a 400 immediately (new `validateTag` / `encTag` helpers).
+
 ## [0.11.0] — 2026-04-20
 
 ### Changed

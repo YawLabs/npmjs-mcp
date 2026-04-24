@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-04-24
+
 ### Fixed
 - `maxSatisfying` no longer leaks prereleases into hyphen ranges. The prerelease filter used to check `sub.includes("-")`, which matched the hyphen-range separator (`1.0.0 - 2.0.0`) and let `2.0.0-beta.1` through. Replaced with a prerelease-tag regex (`/\d+\.\d+\.\d+-/`) that only matches a dash attached to a version.
 - `npm_downloads_bulk` now returns a 400 with an actionable message when any scoped package is passed. The downloads bulk endpoint silently 404s on scoped names; previously that surfaced as a confusing "Not found".

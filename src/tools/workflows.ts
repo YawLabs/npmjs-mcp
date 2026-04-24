@@ -1,25 +1,6 @@
 import { z } from "zod";
 import { type ApiResponse, encPkg, isAuthenticated, registryGet, registryGetAuth } from "../api.js";
-import type { Packument } from "../types.js";
-
-interface TokenObject {
-  token: string;
-  key: string;
-  cidr_whitelist: string[];
-  readonly: boolean;
-  created: string;
-  updated: string;
-}
-
-interface TokenListResponse {
-  total: number;
-  objects: TokenObject[];
-}
-
-interface UserProfile {
-  name?: string;
-  tfa?: { pending: boolean; mode: string } | null;
-}
+import type { Packument, TokenListResponse, UserProfile } from "../types.js";
 
 type Check = {
   check: string;

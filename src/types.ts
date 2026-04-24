@@ -72,3 +72,40 @@ export interface AbbreviatedPackument {
     }
   >;
 }
+
+// ─── Authenticated endpoint shapes ──────────────────────
+// Snake_case fields are preserved as-is from the wire format; handlers that
+// expose these via tool output convert to camelCase at the boundary.
+
+/** npm access token record from /-/npm/v1/tokens. */
+export interface TokenObject {
+  token: string;
+  key: string;
+  cidr_whitelist: string[];
+  created: string;
+  updated: string;
+  readonly: boolean;
+}
+
+/** Paginated response from /-/npm/v1/tokens. */
+export interface TokenListResponse {
+  total: number;
+  objects: TokenObject[];
+  urls?: { next?: string; prev?: string };
+}
+
+/** Authenticated user profile from /-/npm/v1/user. */
+export interface UserProfile {
+  name?: string;
+  email?: string;
+  email_verified?: boolean;
+  created?: string;
+  updated?: string;
+  tfa?: { pending: boolean; mode: string } | null;
+  fullname?: string;
+  homepage?: string;
+  freenode?: string;
+  twitter?: string;
+  github?: string;
+  cidr_whitelist?: string[] | null;
+}

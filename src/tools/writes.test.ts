@@ -547,6 +547,24 @@ describe("npm_org_member_set", () => {
     await tool.handler({ org: "yawlabs", user: "@bob" });
     assert.deepEqual(lastRequest!.body, { user: "bob" });
   });
+
+  it("response includes role when it was set", async () => {
+    mockFetch(200, {});
+    const tool = findTool(writeTools, "npm_org_member_set");
+    const result = (await tool.handler({ org: "yawlabs", user: "bob", role: "admin" })) as {
+      data: Record<string, unknown>;
+    };
+    assert.equal(result.data.role, "admin");
+  });
+
+  it("response omits role when it was not set (server keeps existing role)", async () => {
+    mockFetch(200, {});
+    const tool = findTool(writeTools, "npm_org_member_set");
+    const result = (await tool.handler({ org: "yawlabs", user: "bob" })) as { data: Record<string, unknown> };
+    assert.ok(!("role" in result.data), "role should be omitted from data when not specified");
+    assert.equal(result.data.org, "yawlabs");
+    assert.equal(result.data.user, "bob");
+  });
 });
 
 describe("npm_org_member_remove", () => {
@@ -624,6 +642,32 @@ describe("npm_dist_tag_set", () => {
     assert.match(lastRequest!.url, /\/dist-tags\/beta$/);
     assert.equal(lastRequest!.body, "1.0.0");
   });
+
+  it("rejects empty tag without hitting the network", async () => {
+    const tool = findTool(writeTools, "npm_dist_tag_set");
+    const result = (await tool.handler({ name: "@test/pkg", tag: "", version: "1.0.0" })) as {
+      ok: boolean;
+      status: number;
+      error: string;
+    };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.match(result.error, /empty/i);
+    assert.equal(lastRequest, undefined);
+  });
+
+  it("rejects malformed tag (CRLF, slash) without hitting the network", async () => {
+    const tool = findTool(writeTools, "npm_dist_tag_set");
+    const result = (await tool.handler({ name: "@test/pkg", tag: "bad\ntag", version: "1.0.0" })) as {
+      ok: boolean;
+      status: number;
+      error: string;
+    };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.match(result.error, /tag/i);
+    assert.equal(lastRequest, undefined);
+  });
 });
 
 describe("npm_dist_tag_remove", () => {
@@ -643,6 +687,19 @@ describe("npm_dist_tag_remove", () => {
     };
     assert.equal(result.ok, false);
     assert.match(result.error, /'latest' tag cannot be removed/);
+  });
+
+  it("rejects empty tag without hitting the network", async () => {
+    const tool = findTool(writeTools, "npm_dist_tag_remove");
+    const result = (await tool.handler({ name: "@test/pkg", tag: "" })) as {
+      ok: boolean;
+      status: number;
+      error: string;
+    };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.match(result.error, /empty/i);
+    assert.equal(lastRequest, undefined);
   });
 });
 

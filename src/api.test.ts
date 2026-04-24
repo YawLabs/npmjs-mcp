@@ -3,6 +3,7 @@ import { after, afterEach, describe, it } from "node:test";
 import {
   encPkg,
   encScope,
+  encTag,
   encTeam,
   encUser,
   maxSatisfying,
@@ -10,6 +11,7 @@ import {
   registryPost,
   validatePackageName,
   validateScope,
+  validateTag,
   validateTeam,
   validateUsername,
 } from "./api.js";
@@ -106,6 +108,22 @@ describe("maxSatisfying", () => {
     assert.equal(maxSatisfying(withPre, "^1.0.0"), "1.2.0");
     // ^2.0.0 should fail to match any non-prerelease 2.x
     assert.equal(maxSatisfying(withPre, "^2.0.0"), null);
+  });
+
+  it("hyphen ranges do not leak prereleases (dash in separator, not a prerelease tag)", () => {
+    // Regression: earlier the prerelease filter checked `sub.includes("-")` which
+    // matched the hyphen-range separator and let 2.0.0-beta.1 slip through.
+    const withPre = ["1.0.0", "1.2.0", "2.0.0-beta.1", "2.0.0"];
+    assert.equal(maxSatisfying(withPre, "1.0.0 - 2.0.0"), "2.0.0");
+  });
+
+  it("prerelease targeting still works when range explicitly names a prerelease", () => {
+    const withPre = ["1.0.0", "2.0.0-beta.1"];
+    // Range explicitly names a prerelease tag (dash attached to a version) →
+    // prereleases become candidates. The lightweight comparator treats all
+    // prereleases at the same base version as equal, so we just assert a
+    // prerelease is picked (we don't promise higher-beta preference).
+    assert.equal(maxSatisfying(withPre, ">=2.0.0-beta.1"), "2.0.0-beta.1");
   });
 
   it("returns null when no version matches", () => {
@@ -242,6 +260,31 @@ describe("encScope / encUser / encTeam", () => {
     assert.throws(() => encScope("a/b"), /Invalid/);
     assert.throws(() => encUser("bad\nident"), /Invalid/);
     assert.throws(() => encTeam(""), /empty/i);
+  });
+});
+
+describe("validateTag / encTag", () => {
+  it("accepts common dist-tag names", () => {
+    assert.equal(validateTag("latest"), null);
+    assert.equal(validateTag("next"), null);
+    assert.equal(validateTag("beta"), null);
+    assert.equal(validateTag("1.x"), null);
+  });
+
+  it("rejects empty, whitespace, slash, and CRLF tags", () => {
+    for (const v of ["", " ", "bad tag", "a/b", "bad\nident", ".hidden", "-dash-first"]) {
+      assert.ok(validateTag(v), `validateTag should reject ${JSON.stringify(v)}`);
+    }
+  });
+
+  it("encTag throws on invalid input", () => {
+    assert.throws(() => encTag(""), /empty/i);
+    assert.throws(() => encTag("a/b"), /Invalid/);
+  });
+
+  it("encTag URL-encodes the tag", () => {
+    assert.equal(encTag("beta"), "beta");
+    assert.equal(encTag("1.x"), encodeURIComponent("1.x"));
   });
 });
 

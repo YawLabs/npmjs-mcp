@@ -21,7 +21,10 @@ export const orgTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
-      const res = await registryGetAuth<Record<string, string>>(`/-/org/${encodeURIComponent(input.org)}/user`);
+      const scopeErr = validateScope(input.org);
+      if (scopeErr) return { ok: false, status: 400, error: scopeErr };
+
+      const res = await registryGetAuth<Record<string, string>>(`/-/org/${encScope(input.org)}/user`);
       if (!res.ok) return translateError(res, { op: `org_members ${input.org}` });
 
       const members = Object.entries(res.data!).map(([username, role]) => ({ username, role }));
@@ -54,7 +57,10 @@ export const orgTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
-      const res = await registryGetAuth<Record<string, string>>(`/-/org/${encodeURIComponent(input.org)}/package`);
+      const scopeErr = validateScope(input.org);
+      if (scopeErr) return { ok: false, status: 400, error: scopeErr };
+
+      const res = await registryGetAuth<Record<string, string>>(`/-/org/${encScope(input.org)}/package`);
       if (!res.ok) return translateError(res, { op: `org_packages ${input.org}` });
 
       const packages = Object.entries(res.data!).map(([name, access]) => ({ name, access }));
@@ -86,7 +92,10 @@ export const orgTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
-      const res = await registryGetAuth<string[]>(`/-/org/${encodeURIComponent(input.org)}/team`);
+      const scopeErr = validateScope(input.org);
+      if (scopeErr) return { ok: false, status: 400, error: scopeErr };
+
+      const res = await registryGetAuth<string[]>(`/-/org/${encScope(input.org)}/team`);
       if (!res.ok) return translateError(res, { op: `org_teams ${input.org}` });
 
       return {
@@ -119,8 +128,13 @@ export const orgTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
+      const scopeErr = validateScope(input.org);
+      if (scopeErr) return { ok: false, status: 400, error: scopeErr };
+      const teamErr = validateTeam(input.team);
+      if (teamErr) return { ok: false, status: 400, error: teamErr };
+
       const res = await registryGetAuth<Record<string, string>>(
-        `/-/team/${encodeURIComponent(input.org)}/${encodeURIComponent(input.team)}/package`,
+        `/-/team/${encScope(input.org)}/${encTeam(input.team)}/package`,
       );
       if (!res.ok) return translateError(res, { op: `team_packages ${input.org}:${input.team}` });
 

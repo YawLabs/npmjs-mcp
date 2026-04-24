@@ -13,6 +13,7 @@ import {
   type ApiResponse,
   encPkg,
   encScope,
+  encTag,
   encTeam,
   encUser,
   maxSatisfying,
@@ -22,6 +23,7 @@ import {
   registryPutAuth,
   requireAuth,
   validateScope,
+  validateTag,
   validateTeam,
   validateUsername,
 } from "../api.js";
@@ -432,9 +434,12 @@ export const writeTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
+      const tagErr = validateTag(input.tag);
+      if (tagErr) return { ok: false, status: 400, error: tagErr };
+
       // Registry expects the version wrapped as a JSON string body.
       const putRes = await registryPutAuth(
-        `/-/package/${encPkg(input.name)}/dist-tags/${encodeURIComponent(input.tag)}`,
+        `/-/package/${encPkg(input.name)}/dist-tags/${encTag(input.tag)}`,
         input.version,
       );
       if (!putRes.ok) return translateError(putRes, { pkg: input.name, op: `dist-tag set ${input.tag}` });
@@ -472,6 +477,9 @@ export const writeTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
+      const tagErr = validateTag(input.tag);
+      if (tagErr) return { ok: false, status: 400, error: tagErr };
+
       if (input.tag === "latest") {
         return {
           ok: false,
@@ -480,9 +488,7 @@ export const writeTools = [
         };
       }
 
-      const delRes = await registryDeleteAuth(
-        `/-/package/${encPkg(input.name)}/dist-tags/${encodeURIComponent(input.tag)}`,
-      );
+      const delRes = await registryDeleteAuth(`/-/package/${encPkg(input.name)}/dist-tags/${encTag(input.tag)}`);
       if (!delRes.ok) return translateError(delRes, { pkg: input.name, op: `dist-tag remove ${input.tag}` });
 
       return {
@@ -1015,7 +1021,12 @@ export const writeTools = [
       const res = await registryPutAuth(`/-/org/${encScope(org)}/user`, body);
       if (!res.ok) return translateError(res, { op: `org_member_set ${org}/${user}` });
 
-      return { ok: true, status: 200, data: { org, user, role: input.role } };
+      // Only include role in the response when it was explicitly set — omitting
+      // `role` means "keep existing role", and the server-side value is not
+      // echoed in the PUT response, so we cannot accurately report it.
+      const data: Record<string, unknown> = { org, user };
+      if (input.role) data.role = input.role;
+      return { ok: true, status: 200, data };
     },
   },
 

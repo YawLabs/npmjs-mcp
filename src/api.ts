@@ -109,6 +109,11 @@ export function validateTeam(team: string): string | null {
   return validateIdent(team, "Team name");
 }
 
+/** Validate a dist-tag name. Same charset as other idents. */
+export function validateTag(tag: string): string | null {
+  return validateIdent(tag, "Tag name");
+}
+
 /**
  * URL-encode a package name for use in registry paths. Throws on invalid input.
  * Scoped packages are preserved with an unencoded `@` prefix as the registry requires.
@@ -138,6 +143,13 @@ export function encTeam(team: string): string {
   const err = validateTeam(team);
   if (err) throw new Error(err);
   return encodeURIComponent(team);
+}
+
+/** URL-encode a dist-tag name. Throws on invalid input. */
+export function encTag(tag: string): string {
+  const err = validateTag(tag);
+  if (err) throw new Error(err);
+  return encodeURIComponent(tag);
 }
 
 // ─── Auth ──────────────────────────────────────────────
@@ -479,9 +491,14 @@ export function maxSatisfying(versions: string[], range: string): string | null 
     const parsed = parseRange(sub);
     if (!parsed) continue;
 
+    // A prerelease tag is `-<alphanumeric>` directly attached to a version
+    // (e.g. `^1.0.0-beta`). Hyphen ranges (`1.0.0 - 2.0.0`) have whitespace
+    // around the dash, so they must not be misread as targeting prereleases.
+    const subTargetsPrerelease = /\d+\.\d+\.\d+-/.test(sub);
+
     for (const v of versions) {
       // Skip prereleases (e.g. 1.0.0-beta.1) unless range explicitly targets one
-      if (v.includes("-") && !sub.includes("-")) continue;
+      if (v.includes("-") && !subTargetsPrerelease) continue;
       const vp = parseSemver(v);
       if (!vp) continue;
       if (parsed.min && cmpSemver(vp, parsed.min) < 0) continue;

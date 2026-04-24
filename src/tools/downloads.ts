@@ -52,7 +52,9 @@ export const downloadTools = [
   },
   {
     name: "npm_downloads_bulk",
-    description: "Compare download counts for multiple packages over a period. Up to 128 packages.",
+    description:
+      "Compare download counts for multiple packages over a period. Up to 128 packages. " +
+      "Scoped packages (@scope/name) are NOT supported by the bulk endpoint — call npm_downloads separately for each scoped package.",
     annotations: {
       title: "Bulk download comparison",
       readOnlyHint: true,
@@ -61,11 +63,25 @@ export const downloadTools = [
       openWorldHint: true,
     },
     inputSchema: z.object({
-      packages: z.array(z.string()).min(1).max(128).describe("Array of package names to compare"),
+      packages: z.array(z.string()).min(1).max(128).describe("Array of package names to compare (unscoped only)"),
       period: z.string().optional().describe("Period (default: 'last-week')"),
     }),
     handler: async (input: { packages: string[]; period?: string }) => {
       const period = input.period ?? "last-week";
+
+      // The downloads bulk endpoint silently 404s on scoped packages — reject
+      // upfront with an actionable message rather than masking it as "not found".
+      const scoped = input.packages.filter((p) => p.startsWith("@"));
+      if (scoped.length > 0) {
+        return {
+          ok: false,
+          status: 400,
+          error:
+            `npm_downloads_bulk does not support scoped packages (received: ${scoped.join(", ")}). ` +
+            `Call npm_downloads separately for each scoped package.`,
+        };
+      }
+
       const names = input.packages.map((p) => encPkg(p)).join(",");
       const res = await downloadsGet(`/downloads/point/${period}/${names}`);
       return res.ok ? res : translateError(res, { op: `downloads_bulk ${period}` });

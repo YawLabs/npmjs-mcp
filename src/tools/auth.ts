@@ -1,36 +1,7 @@
 import { z } from "zod";
 import { registryGetAuth, requireAuth } from "../api.js";
 import { translateError } from "../errors.js";
-
-interface TokenObject {
-  token: string;
-  key: string;
-  cidr_whitelist: string[];
-  created: string;
-  updated: string;
-  readonly: boolean;
-}
-
-interface TokenListResponse {
-  total: number;
-  objects: TokenObject[];
-  urls: { next?: string; prev?: string };
-}
-
-interface UserProfile {
-  name?: string;
-  email?: string;
-  email_verified?: boolean;
-  created?: string;
-  updated?: string;
-  tfa?: { pending: boolean; mode: string } | null;
-  fullname?: string;
-  homepage?: string;
-  freenode?: string;
-  twitter?: string;
-  github?: string;
-  cidr_whitelist?: string[] | null;
-}
+import type { TokenListResponse, UserProfile } from "../types.js";
 
 export const authTools = [
   {

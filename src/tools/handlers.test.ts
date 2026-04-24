@@ -532,6 +532,22 @@ describe("Download handlers", () => {
     assert.ok(lastRequest!.url.includes("/downloads/point/last-week/express,koa,fastify"));
   });
 
+  it("npm_downloads_bulk rejects scoped packages with actionable 400", async () => {
+    const tool = findTool(downloadTools, "npm_downloads_bulk");
+    const result = (await tool.handler({ packages: ["express", "@yawlabs/npmjs-mcp"] })) as {
+      ok: boolean;
+      status: number;
+      error: string;
+    };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.match(result.error, /scoped packages/);
+    assert.match(result.error, /@yawlabs\/npmjs-mcp/);
+    assert.match(result.error, /npm_downloads/);
+    // Must not have hit the network
+    assert.equal(lastRequest, undefined);
+  });
+
   it("npm_version_downloads defaults to last-week", async () => {
     mockFetch(200, {});
     const tool = findTool(downloadTools, "npm_version_downloads");
@@ -868,6 +884,63 @@ describe("Org handlers", () => {
     assert.equal(result.ok, false);
     assert.equal(result.status, 400);
     assert.match(result.error, /scope/i);
+  });
+
+  it("npm_org_members rejects malformed org before hitting the network", async () => {
+    const tool = findTool(orgTools, "npm_org_members");
+    const result = (await tool.handler({ org: "bad\norg" })) as { ok: boolean; status: number; error: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.match(result.error, /scope/i);
+  });
+
+  it("npm_org_packages rejects malformed org before hitting the network", async () => {
+    const tool = findTool(orgTools, "npm_org_packages");
+    const result = (await tool.handler({ org: "../etc/passwd" })) as { ok: boolean; status: number; error: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.match(result.error, /scope/i);
+  });
+
+  it("npm_org_teams rejects malformed org before hitting the network", async () => {
+    const tool = findTool(orgTools, "npm_org_teams");
+    const result = (await tool.handler({ org: "" })) as { ok: boolean; status: number; error: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.match(result.error, /empty/i);
+  });
+
+  it("npm_team_packages rejects malformed org before hitting the network", async () => {
+    const tool = findTool(orgTools, "npm_team_packages");
+    const result = (await tool.handler({ org: "bad org", team: "developers" })) as {
+      ok: boolean;
+      status: number;
+      error: string;
+    };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.match(result.error, /scope/i);
+  });
+
+  it("npm_team_packages rejects malformed team before hitting the network", async () => {
+    const tool = findTool(orgTools, "npm_team_packages");
+    const result = (await tool.handler({ org: "yawlabs", team: "bad\nteam" })) as {
+      ok: boolean;
+      status: number;
+      error: string;
+    };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.match(result.error, /team/i);
+  });
+
+  it("npm_org_members strips leading @ and accepts valid scope", async () => {
+    mockFetch(200, { alice: "owner" });
+    const tool = findTool(orgTools, "npm_org_members");
+    const result = (await tool.handler({ org: "@yawlabs" })) as { ok: boolean; data: { memberCount: number } };
+    assert.equal(result.ok, true);
+    assert.ok(lastRequest!.url.includes("/-/org/yawlabs/user"));
+    assert.equal(result.data.memberCount, 1);
   });
 });
 

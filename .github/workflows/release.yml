@@ -6,7 +6,12 @@ on:
       - 'v*'
 
 jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
   release:
+    needs: ci
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -23,18 +28,6 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - run: npm ci
-
-      # Lint, build, and test are also run inside release.sh, but we expose them as
-      # discrete GitHub Actions steps so failures show a clear step name (e.g. "Test")
-      # in the workflow UI instead of being buried inside the Release step logs.
-      - name: Lint
-        run: npm run lint
-
-      - name: Build
-        run: npm run build
-
-      - name: Test
-        run: npm test
 
       - name: Release
         run: bash release.sh

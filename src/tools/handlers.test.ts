@@ -261,6 +261,31 @@ describe("Package handlers", () => {
     assert.equal(lastRequest!.url, `${REGISTRY}/express`);
   });
 
+  it("npm_versions filters undated versions out of the sorted list but reports the raw count in `total`", async () => {
+    // 0.9.0 is in `versions` but has no `time` entry — the registry occasionally
+    // exposes this when a publish is mid-flight. The handler must not include
+    // a NaN-dated row in the sorted output. `total` still reflects the raw
+    // published-version count so callers don't see a phantom drop.
+    mockFetch(200, {
+      name: "ghost",
+      "dist-tags": { latest: "1.0.0" },
+      versions: {
+        "0.9.0": { name: "ghost", version: "0.9.0", dist: { shasum: "x", tarball: "t" } },
+        "1.0.0": { name: "ghost", version: "1.0.0", dist: { shasum: "x", tarball: "t" } },
+      },
+      time: { created: "2024-01-01", modified: "2024-01-02", "1.0.0": "2024-01-02" },
+      maintainers: [{ name: "alice" }],
+    });
+    const tool = findTool(packageTools, "npm_versions");
+    const result = (await tool.handler({ name: "ghost" })) as {
+      data: { total: number; showing: number; versions: Array<{ version: string; date: string }> };
+    };
+    assert.equal(result.data.total, 2);
+    assert.equal(result.data.showing, 1);
+    assert.equal(result.data.versions.length, 1);
+    assert.equal(result.data.versions[0].version, "1.0.0");
+  });
+
   it("npm_readme returns readme content", async () => {
     mockFetch(200, packument);
     const tool = findTool(packageTools, "npm_readme");
@@ -1129,6 +1154,51 @@ describe("Workflow handlers", () => {
     assert.ok(result.data.failCount > 0);
     assert.ok(result.data.checks.some((c) => c.check === "NPM_TOKEN configured" && c.status === "fail"));
     process.env.NPM_TOKEN = saved;
+  });
+
+  it("npm_publish_preflight surfaces a warn check when packument fetch returns non-{200,404}", async () => {
+    // Token is set in the harness; whoami/profile/tokens succeed, packument 503s.
+    // Zero backoff so the retry loop on the 503 doesn't slow the suite.
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    try {
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.includes("/-/whoami")) {
+          return new Response(JSON.stringify({ username: "alice" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (url.includes("/-/npm/v1/user")) {
+          return new Response(JSON.stringify({ name: "alice", tfa: null }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (url.includes("/-/npm/v1/tokens")) {
+          return new Response(JSON.stringify({ total: 0, objects: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        // Packument fetch -> 503
+        return new Response("service unavailable", { status: 503 });
+      }) as typeof fetch;
+
+      const tool = findTool(workflowTools, "npm_publish_preflight");
+      const result = (await tool.handler({ name: "@yawlabs/test" })) as {
+        data: {
+          warnCount: number;
+          checks: { check: string; status: string; detail: string }[];
+        };
+      };
+      const availabilityCheck = result.data.checks.find((c) => c.check === "Package name availability");
+      assert.ok(availabilityCheck, "expected a Package name availability check entry");
+      assert.equal(availabilityCheck!.status, "warn");
+      assert.match(availabilityCheck!.detail, /503/);
+    } finally {
+      delete process.env.NPM_RETRY_BACKOFF_MS;
+    }
   });
 });
 

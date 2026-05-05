@@ -283,6 +283,16 @@ export const workflowTools = [
             detail: `"${input.name}" exists. Maintainers: ${maintainers.join(", ") || "unknown"}. Authenticate to check your access.`,
           });
         }
+      } else {
+        // Registry returned something other than 200 or 404 (e.g. 503). Without this
+        // branch the check list would silently omit the name-availability/maintainer
+        // entry and the summary could read "READY to publish" with no signal that
+        // we never actually verified.
+        checks.push({
+          check: "Package name availability",
+          status: "warn",
+          detail: `Could not verify whether "${input.name}" is available or whether you have access (registry returned HTTP ${pkgRes.status}). Re-run npm_publish_preflight before publishing.`,
+        });
       }
 
       // ─── 4. Publish guidance (always non-interactive) ───

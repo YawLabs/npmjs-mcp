@@ -123,16 +123,22 @@ export const packageTools = [
 
       const pkg = res.data!;
       const limit = input.limit ?? 50;
-      const allVersions = Object.keys(pkg.versions)
+      const totalPublished = Object.keys(pkg.versions).length;
+      // Filter out versions missing a publish time before sorting -- a NaN date
+      // produces undefined ordering in `.sort`. Mirrors the defensive pattern
+      // already used in analysis.ts npm_release_frequency. `total` still reports
+      // the raw published-version count so the field meaning doesn't shift.
+      const dated = Object.keys(pkg.versions)
         .map((v) => ({
           version: v,
           date: pkg.time[v],
           deprecated: pkg.versions[v].deprecated,
           npmUser: pkg.versions[v]._npmUser?.name,
         }))
+        .filter((r) => r.date)
         .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
-      const versions = limit > 0 ? allVersions.slice(0, limit) : allVersions;
+      const versions = limit > 0 ? dated.slice(0, limit) : dated;
 
       return {
         ok: true,
@@ -140,7 +146,7 @@ export const packageTools = [
         data: {
           name: pkg.name,
           distTags: pkg["dist-tags"],
-          total: allVersions.length,
+          total: totalPublished,
           showing: versions.length,
           versions,
         },

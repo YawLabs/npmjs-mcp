@@ -126,6 +126,23 @@ describe("maxSatisfying", () => {
     assert.equal(maxSatisfying(withPre, ">=2.0.0-beta.1"), "2.0.0-beta.1");
   });
 
+  it("prerelease anchor only allows prereleases of the same base version (npm semver)", () => {
+    // ^1.0.0-beta names a prerelease at 1.0.0 — only prereleases of 1.0.0
+    // should be eligible. 1.5.0-alpha.1 has the same major but a different
+    // base version and must NOT be picked, even though stable 1.x is in range.
+    const withPre = ["1.0.0-beta.1", "1.0.0-beta.2", "1.5.0-alpha.1", "1.2.0"];
+    // Stable 1.2.0 wins over the eligible 1.0.0-beta.* candidates; 1.5.0-alpha.1
+    // is excluded entirely (different prerelease base from the anchor).
+    assert.equal(maxSatisfying(withPre, "^1.0.0-beta"), "1.2.0");
+  });
+
+  it("prerelease anchor excludes off-base prereleases when no stable matches", () => {
+    // Only off-base prereleases available — should return null rather than picking
+    // a prerelease whose base differs from the anchor.
+    const onlyOffBase = ["1.5.0-alpha.1", "1.7.0-rc.1"];
+    assert.equal(maxSatisfying(onlyOffBase, "^1.0.0-beta"), null);
+  });
+
   it("returns null when no version matches", () => {
     assert.equal(maxSatisfying(versions, "^3.0.0"), null);
   });

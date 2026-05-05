@@ -38,9 +38,18 @@ export interface VersionDoc {
   _npmUser?: { name: string; email?: string };
 }
 
-/** Full packument (all versions, readme, maintainers, etc). */
+/**
+ * Full packument (all versions, readme, maintainers, etc).
+ *
+ * The CouchDB-style fields (`_rev`, `_revisions`, `_attachments`) are only
+ * populated on `?write=true` reads. They're optional so the same type works
+ * for both read and write paths.
+ */
 export interface Packument {
   _id: string;
+  _rev?: string;
+  _revisions?: unknown;
+  _attachments?: unknown;
   name: string;
   description?: string;
   "dist-tags": Record<string, string>;

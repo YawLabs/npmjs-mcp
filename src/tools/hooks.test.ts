@@ -56,6 +56,41 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
+describe("hook endpoint schema", () => {
+  it("npm_hook_add rejects http:// endpoints at the schema layer", () => {
+    const tool = hookTools.find((t) => t.name === "npm_hook_add");
+    if (!tool) throw new Error("npm_hook_add not found");
+    const result = tool.inputSchema.safeParse({
+      target: "@yawlabs/pkg",
+      endpoint: "http://example.com/h",
+      secret: "s",
+    });
+    assert.equal(result.success, false);
+  });
+
+  it("npm_hook_add accepts https:// endpoints", () => {
+    const tool = hookTools.find((t) => t.name === "npm_hook_add");
+    if (!tool) throw new Error("npm_hook_add not found");
+    const result = tool.inputSchema.safeParse({
+      target: "@yawlabs/pkg",
+      endpoint: "https://example.com/h",
+      secret: "s",
+    });
+    assert.equal(result.success, true);
+  });
+
+  it("npm_hook_update rejects http:// endpoints", () => {
+    const tool = hookTools.find((t) => t.name === "npm_hook_update");
+    if (!tool) throw new Error("npm_hook_update not found");
+    const result = tool.inputSchema.safeParse({
+      id: "h1",
+      endpoint: "http://example.com/h",
+      secret: "s",
+    });
+    assert.equal(result.success, false);
+  });
+});
+
 describe("npm_hook_add", () => {
   it("classifies @scope/pkg as package type", async () => {
     mockFetch(200, { id: "h1" });

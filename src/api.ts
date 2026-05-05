@@ -494,13 +494,21 @@ export function maxSatisfying(versions: string[], range: string): string | null 
     // A prerelease tag is `-<alphanumeric>` directly attached to a version
     // (e.g. `^1.0.0-beta`). Hyphen ranges (`1.0.0 - 2.0.0`) have whitespace
     // around the dash, so they must not be misread as targeting prereleases.
-    const subTargetsPrerelease = /\d+\.\d+\.\d+-/.test(sub);
+    // When a range names a prerelease, only prereleases with the same
+    // major.minor.patch as the anchor are eligible -- this matches npm semver,
+    // which would NOT consider 1.5.0-alpha to satisfy ^1.0.0-beta.
+    const anchorMatch = sub.match(/(\d+)\.(\d+)\.(\d+)-/);
+    const prereleaseAnchor: SemVer | null = anchorMatch
+      ? [Number(anchorMatch[1]), Number(anchorMatch[2]), Number(anchorMatch[3])]
+      : null;
 
     for (const v of versions) {
-      // Skip prereleases (e.g. 1.0.0-beta.1) unless range explicitly targets one
-      if (v.includes("-") && !subTargetsPrerelease) continue;
       const vp = parseSemver(v);
       if (!vp) continue;
+      if (v.includes("-")) {
+        if (!prereleaseAnchor) continue;
+        if (vp[0] !== prereleaseAnchor[0] || vp[1] !== prereleaseAnchor[1] || vp[2] !== prereleaseAnchor[2]) continue;
+      }
       if (parsed.min && cmpSemver(vp, parsed.min) < 0) continue;
       if (parsed.max && cmpSemver(vp, parsed.max) >= 0) continue;
       if (!bestParsed || cmpSemver(vp, bestParsed) > 0) {

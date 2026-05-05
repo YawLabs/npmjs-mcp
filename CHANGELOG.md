@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2] — 2026-05-04
+
+### Fixed
+- `highestVersion` (used by `npm_unpublish_version` to recompute `dist-tags.latest` after removing the version `latest` pointed at) no longer treats prereleases as candidates. Previously the unanchored regex matched `1.0.0-beta.1` as `[1,0,0]` and returned the prerelease string. Now prereleases are excluded; if no stable version remains, `latest` is left unset rather than pointing at a prerelease.
+- `maxSatisfying` prerelease anchoring tightened to match npm semver: a range like `^1.0.0-beta` now only allows prereleases of `1.0.0`, not arbitrary prereleases such as `1.5.0-alpha.1`.
+- `npm_publish_preflight` now emits a `warn` check (instead of silently dropping the entry) when the packument fetch returns a status other than 200 or 404.
+- `npm_versions` filters out versions missing a `pkg.time[v]` entry before sorting (matches the defensive pattern already used by `npm_release_frequency`). The `total` field still reports the raw published-version count so the meaning doesn't shift.
+
+### Changed
+- `npm_hook_add` and `npm_hook_update` now reject `http://` endpoints at the schema layer. HMAC integrity does not protect payload confidentiality, and webhook events leak package metadata over plain HTTP.
+- `npm_unpublish_version` response now includes a `complete: boolean` field. When the packument PUT succeeds but the tarball DELETE fails the version is unreachable via the listing but the tarball file remains fetchable at the CDN URL until the registry GCs it -- callers can detect this without parsing `tarballWarning`.
+- `Packument` type consolidated -- `_rev`, `_revisions`, and `_attachments` moved from a duplicate definition in `writes.ts` onto the canonical type in `types.ts` as optional fields.
+
 ## [0.11.1] — 2026-04-24
 
 ### Fixed
@@ -130,7 +143,8 @@ _Closes #1._
 - Initial release — 22 tools for npm registry intelligence (read-side).
 - Tool definition tests.
 
-[Unreleased]: https://github.com/YawLabs/npmjs-mcp/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.1...v0.11.2
 [0.9.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.6.0...v0.7.0

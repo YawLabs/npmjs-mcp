@@ -28,28 +28,9 @@ import {
   validateUsername,
 } from "../api.js";
 import { translateError, validateDeprecationMessage, versionsMatchingRange } from "../errors.js";
+import type { Packument } from "../types.js";
 
 // ─── Packument helpers ──────────────────────────────────
-
-interface Packument {
-  _id: string;
-  _rev?: string;
-  _revisions?: unknown;
-  _attachments?: unknown;
-  name: string;
-  "dist-tags": Record<string, string>;
-  versions: Record<string, PackumentVersion>;
-  maintainers: Array<{ name: string; email?: string }>;
-  [key: string]: unknown;
-}
-
-interface PackumentVersion {
-  name: string;
-  version: string;
-  deprecated?: string;
-  dist?: { tarball?: string };
-  [key: string]: unknown;
-}
 
 /** Fetch the full packument with _rev for write operations. */
 async function fetchPackument(pkg: string): Promise<ApiResponse<Packument>> {
@@ -75,10 +56,16 @@ function parseTeamTarget(target: string): { scope: string; team: string } | { er
   return { scope, team };
 }
 
-/** Highest semver in the list (loose compare, ignoring prereleases). Null if empty. */
+/**
+ * Highest stable semver in the list (loose compare). Returns null if no stable
+ * version exists. Used to recompute `dist-tags.latest` after unpublish — npm
+ * convention is that `latest` should never point at a prerelease, so prereleases
+ * (anything containing `-`) are excluded from the candidate set.
+ */
 function highestVersion(versions: string[]): string | null {
   const parsed: Array<[number, number, number, string]> = [];
   for (const v of versions) {
+    if (v.includes("-")) continue;
     const m = v.match(/^(\d+)\.(\d+)\.(\d+)/);
     if (m) parsed.push([Number(m[1]), Number(m[2]), Number(m[3]), v]);
   }
@@ -337,6 +324,12 @@ export const writeTools = [
         }
       }
 
+      // The version is unreachable via the packument once step 3 (PUT) succeeds.
+      // If the tarball DELETE then fails the version listing is gone but the
+      // tarball file is still fetchable at its direct CDN URL until the
+      // registry GCs it -- a partial state callers should be able to detect
+      // without parsing `tarballWarning`.
+      const complete = !tarballUrl || tarballDeleted;
       return {
         ok: true,
         status: 200,
@@ -344,6 +337,7 @@ export const writeTools = [
           package: input.name,
           unpublishedVersion: input.version,
           remainingVersions: Object.keys(packument.versions),
+          complete,
           tarballDeleted,
           ...(tarballError ? { tarballWarning: tarballError } : {}),
         },

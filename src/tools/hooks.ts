@@ -20,6 +20,14 @@ function classifyHookTarget(target: string): { type: "package" | "scope" | "owne
   return { type: "package", name: target };
 }
 
+// HMAC signatures protect payload integrity, not confidentiality. An http:// endpoint
+// would still leak package event metadata (publish times, version numbers, maintainer
+// names) over the wire, so reject non-HTTPS endpoints up front.
+const httpsEndpoint = z
+  .string()
+  .url()
+  .refine((u) => u.startsWith("https://"), { message: "Endpoint must use https://" });
+
 /** Recursively remove any `secret` fields so HMAC secrets never appear in tool output. */
 function stripSecrets<T>(data: T): T {
   if (Array.isArray(data)) {
@@ -52,7 +60,7 @@ export const hookTools = [
     },
     inputSchema: z.object({
       target: z.string().describe("Hook target: 'pkg', '@scope/pkg', '@scope', or '~user'"),
-      endpoint: z.string().url().describe("HTTPS URL that will receive POST events"),
+      endpoint: httpsEndpoint.describe("HTTPS URL that will receive POST events"),
       secret: z.string().describe("Secret used to HMAC-sign webhook payloads"),
     }),
     handler: async (input: { target: string; endpoint: string; secret: string }) => {
@@ -140,7 +148,7 @@ export const hookTools = [
     },
     inputSchema: z.object({
       id: z.string().describe("Hook ID"),
-      endpoint: z.string().url().describe("New HTTPS URL"),
+      endpoint: httpsEndpoint.describe("New HTTPS URL"),
       secret: z.string().describe("New signing secret"),
     }),
     handler: async (input: { id: string; endpoint: string; secret: string }) => {

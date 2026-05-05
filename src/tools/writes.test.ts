@@ -319,17 +319,105 @@ describe("npm_unpublish_version", () => {
       name: "@test/pkg",
       version: "0.1.0",
       confirm: true,
-    })) as { ok: boolean; data: { remainingVersions: string[]; tarballDeleted: boolean } };
+    })) as { ok: boolean; data: { remainingVersions: string[]; tarballDeleted: boolean; complete: boolean } };
     assert.equal(result.ok, true);
     assert.ok(!result.data.remainingVersions.includes("0.1.0"));
     assert.equal(result.data.remainingVersions.length, 2);
     assert.equal(result.data.tarballDeleted, true);
+    assert.equal(result.data.complete, true);
     // PUT to /-rev/1-abc
     assert.equal(requests[1].method, "PUT");
     assert.match(requests[1].url, /\/-rev\/1-abc$/);
     // DELETE tarball with fresh rev
     assert.equal(requests[3].method, "DELETE");
     assert.match(requests[3].url, /\/@test\/pkg\/-\/pkg-0\.1\.0\.tgz\/-rev\/2-def$/);
+  });
+
+  it("reports complete:false when packument PUT succeeds but tarball DELETE fails", async () => {
+    const pkg = samplePackument({
+      versions: {
+        "0.1.0": {
+          name: "@test/pkg",
+          version: "0.1.0",
+          dist: { tarball: "https://registry.npmjs.org/@test/pkg/-/pkg-0.1.0.tgz" },
+        },
+        "0.2.0": { name: "@test/pkg", version: "0.2.0" },
+        "1.0.0": { name: "@test/pkg", version: "1.0.0" },
+      },
+    });
+    mockFetchSequence([
+      { status: 200, body: pkg }, // GET packument
+      { status: 200, body: {} }, // PUT packument (success)
+      { status: 200, body: { ...pkg, _rev: "2-def" } }, // re-GET for fresh rev
+      { status: 500, body: "boom" }, // DELETE tarball (fails)
+    ]);
+    const tool = findTool(writeTools, "npm_unpublish_version");
+    const result = (await tool.handler({
+      name: "@test/pkg",
+      version: "0.1.0",
+      confirm: true,
+    })) as {
+      ok: boolean;
+      data: { complete: boolean; tarballDeleted: boolean; tarballWarning?: string };
+    };
+    assert.equal(result.ok, true);
+    assert.equal(result.data.tarballDeleted, false);
+    assert.equal(result.data.complete, false);
+    assert.ok(result.data.tarballWarning);
+  });
+
+  it("reports complete:true when the version had no tarball URL to delete", async () => {
+    const pkg = samplePackument({
+      versions: {
+        "0.1.0": { name: "@test/pkg", version: "0.1.0" }, // no dist.tarball
+        "0.2.0": { name: "@test/pkg", version: "0.2.0" },
+        "1.0.0": { name: "@test/pkg", version: "1.0.0" },
+      },
+    });
+    mockFetchSequence([
+      { status: 200, body: pkg },
+      { status: 200, body: {} },
+    ]);
+    const tool = findTool(writeTools, "npm_unpublish_version");
+    const result = (await tool.handler({
+      name: "@test/pkg",
+      version: "0.1.0",
+      confirm: true,
+    })) as { ok: boolean; data: { complete: boolean; tarballDeleted: boolean } };
+    assert.equal(result.ok, true);
+    assert.equal(result.data.tarballDeleted, false);
+    assert.equal(result.data.complete, true);
+  });
+
+  it("does not set dist-tags.latest to a prerelease when the only stable version is unpublished", async () => {
+    // Unpublishing the sole stable release leaves only prereleases. Per npm
+    // convention `latest` must not point at a prerelease, so the recompute
+    // helper should return null and `latest` should be removed entirely
+    // (the dist-tag deletion loop already handled it by virtue of pointing at
+    // the unpublished version).
+    const pkg = samplePackument({
+      "dist-tags": { latest: "1.0.0" },
+      versions: {
+        "1.0.0": {
+          name: "@test/pkg",
+          version: "1.0.0",
+          dist: { tarball: "https://registry.npmjs.org/@test/pkg/-/pkg-1.0.0.tgz" },
+        },
+        "1.1.0-beta.1": { name: "@test/pkg", version: "1.1.0-beta.1" },
+        "2.0.0-alpha.3": { name: "@test/pkg", version: "2.0.0-alpha.3" },
+      },
+    });
+    mockFetchSequence([
+      { status: 200, body: pkg },
+      { status: 200, body: {} },
+      { status: 200, body: { ...pkg, _rev: "2-def" } },
+      { status: 200, body: {} },
+    ]);
+    const tool = findTool(writeTools, "npm_unpublish_version");
+    await tool.handler({ name: "@test/pkg", version: "1.0.0", confirm: true });
+    const putBody = requests[1].body as { "dist-tags": Record<string, string> };
+    // No latest tag at all — better than pointing at a prerelease.
+    assert.ok(!("latest" in putBody["dist-tags"]));
   });
 
   it("resets dist-tags.latest when removing the version it pointed at", async () => {

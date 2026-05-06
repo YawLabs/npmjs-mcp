@@ -29,7 +29,10 @@ const version =
 
 const subcommand = process.argv[2];
 
-if (subcommand === "version" || subcommand === "--version") {
+// Accept the long form (`--version`) plus the conventional short forms (`-v`,
+// `-V`) and the bare subcommand. The release smoke test uses `--version`; the
+// short forms are here for parity with most CLIs and cost nothing.
+if (subcommand === "version" || subcommand === "--version" || subcommand === "-v" || subcommand === "-V") {
   console.log(version);
   process.exit(0);
 }

@@ -15,7 +15,9 @@ await build({
   entryPoints: ["src/index.ts"],
   bundle: true,
   platform: "node",
-  target: "node18",
+  // Match package.json `engines: ">=20"`. Lower targets force esbuild to
+  // down-level syntax we don't ship to.
+  target: "node20",
   format: "esm",
   outfile: "dist/index.js",
   define: {

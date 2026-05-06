@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { registryGetAuth, requireAuth } from "../api.js";
+import { encUser, registryGetAuth, requireAuth, validateUsername } from "../api.js";
 import { translateError } from "../errors.js";
 import type { TokenListResponse, UserProfile } from "../types.js";
 
@@ -175,8 +175,11 @@ export const authTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
+      const userErr = validateUsername(input.username);
+      if (userErr) return { ok: false, status: 400, error: userErr };
+
       const res = await registryGetAuth<Record<string, string>>(
-        `/-/user/org.couchdb.user:${encodeURIComponent(input.username)}/package`,
+        `/-/user/org.couchdb.user:${encUser(input.username)}/package`,
       );
       if (!res.ok) return translateError(res, { op: `user_packages ${input.username}` });
 

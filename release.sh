@@ -1,23 +1,25 @@
 #!/bin/bash
 # =============================================================================
-# Release Script — Build, tag, publish to npm, create GitHub release
+# Release Script -- Build, tag, publish to npm, create GitHub release
 # =============================================================================
 # Usage:
-#   ./release.sh <new-version>    — full release from local machine
-#   ./release.sh                  — CI mode (derives version from git tag)
+#   ./release.sh <new-version>    -- full release from local machine
+#   ./release.sh                  -- CI mode (derives version from git tag)
 #
-# If interrupted, re-run with the same version — each step is idempotent.
+# If interrupted, re-run with the same version -- each step is idempotent.
 #
 # Prerequisites:
-#   - Node.js 18+ and npm installed
+#   - Node.js 20+ and npm installed
 #   - npm authenticated (npm whoami) or NODE_AUTH_TOKEN set
 #   - gh CLI authenticated (or GITHUB_TOKEN set)
 # =============================================================================
 
 set -euo pipefail
-trap 'echo -e "\n\033[0;31m  ✗ Release failed at line $LINENO (exit code $?)\033[0m"' ERR
+trap 'echo -e "\n\033[0;31m  [FAIL] Release failed at line $LINENO (exit code $?)\033[0m"' ERR
 
 # ---- Helpers ----
+# ASCII-only status glyphs: Windows ConPTY mangles Unicode (✓ ✗) into mojibake
+# when the colored output is captured into bug reports or copy-pasted.
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -25,9 +27,9 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 step() { echo -e "\n${CYAN}=== [$1/$TOTAL_STEPS] $2 ===${NC}"; }
-info() { echo -e "${GREEN}  ✓ $1${NC}"; }
-warn() { echo -e "${YELLOW}  ! $1${NC}"; }
-fail() { echo -e "${RED}  ✗ $1${NC}"; exit 1; }
+info() { echo -e "${GREEN}  [ok] $1${NC}"; }
+warn() { echo -e "${YELLOW}  [!]  $1${NC}"; }
+fail() { echo -e "${RED}  [x]  $1${NC}"; exit 1; }
 
 TOTAL_STEPS=7
 
@@ -38,7 +40,7 @@ IS_CI="${CI:-false}"
 if [ -z "$VERSION" ]; then
   if [ "$IS_CI" = "true" ] && [ -n "${GITHUB_REF_NAME:-}" ]; then
     VERSION="${GITHUB_REF_NAME#v}"
-    info "CI mode — version $VERSION from tag $GITHUB_REF_NAME"
+    info "CI mode -- version $VERSION from tag $GITHUB_REF_NAME"
   else
     echo "Usage: ./release.sh <version>"
     echo "  e.g. ./release.sh 0.1.0"
@@ -64,7 +66,7 @@ RESUMING=false
 
 if [ "$CURRENT_VERSION" = "$VERSION" ]; then
   RESUMING=true
-  info "Already at v${VERSION} — resuming"
+  info "Already at v${VERSION} -- resuming"
 else
   if [ "$IS_CI" != "true" ]; then
     if [ -n "$(git status --porcelain)" ]; then
@@ -116,7 +118,7 @@ info "All tests passed"
 step 3 "Bump version to $VERSION"
 
 if [ "$CURRENT_VERSION" = "$VERSION" ]; then
-  info "Already at v${VERSION} — skipping"
+  info "Already at v${VERSION} -- skipping"
 else
   npm version "$VERSION" --no-git-tag-version
   info "Version bumped"
@@ -128,7 +130,7 @@ fi
 step 4 "Commit, tag, and push"
 
 if [ "$IS_CI" = "true" ]; then
-  info "CI mode — skipping commit/tag/push (already tagged)"
+  info "CI mode -- skipping commit/tag/push (already tagged)"
 else
   if [ -n "$(git status --porcelain package.json package-lock.json 2>/dev/null)" ]; then
     git add package.json package-lock.json
@@ -163,7 +165,7 @@ step 5 "Publish to npm"
 PUBLISHED_VERSION=$(npm view "@yawlabs/npmjs-mcp@${VERSION}" version 2>/dev/null || echo "")
 
 if [ "$PUBLISHED_VERSION" = "$VERSION" ]; then
-  info "v${VERSION} already published on npm — skipping"
+  info "v${VERSION} already published on npm -- skipping"
 else
   if [ "$IS_CI" = "true" ]; then
     npm publish --access public --provenance
@@ -179,10 +181,15 @@ fi
 step 6 "Create GitHub release"
 
 if gh release view "v${VERSION}" >/dev/null 2>&1; then
-  info "GitHub release v${VERSION} already exists — skipping"
+  info "GitHub release v${VERSION} already exists -- skipping"
 else
-  PREV_TAG=$(git tag --sort=-v:refname | grep -A1 "^v${VERSION}$" | tail -1)
-  if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "v${VERSION}" ]; then
+  # Resolve the tag immediately preceding v${VERSION} via git's own ancestry
+  # walk. Earlier this used `git tag --sort=-v:refname | grep -A1 ...`, which
+  # returned a misleading neighbour tag when v${VERSION} was missing from the
+  # tag list. `git describe --tags --abbrev=0 v${VERSION}^` only succeeds when
+  # the current tag exists; if it fails we fall back to "Initial release".
+  PREV_TAG=$(git describe --tags --abbrev=0 "v${VERSION}^" 2>/dev/null || true)
+  if [ -n "$PREV_TAG" ]; then
     CHANGELOG=$(git log --oneline "${PREV_TAG}..v${VERSION}" --no-decorate | sed 's/^[a-f0-9]* /- /')
   else
     CHANGELOG="Initial release"
@@ -205,7 +212,7 @@ NPM_VERSION=$(npm view "@yawlabs/npmjs-mcp@${VERSION}" version 2>/dev/null || ec
 if [ "$NPM_VERSION" = "$VERSION" ]; then
   info "npm: @yawlabs/npmjs-mcp@${NPM_VERSION}"
 else
-  warn "npm shows ${NPM_VERSION:-nothing} (expected $VERSION — may still be propagating)"
+  warn "npm shows ${NPM_VERSION:-nothing} (expected $VERSION -- may still be propagating)"
 fi
 
 PKG_VERSION=$(node -p "require('./package.json').version")
@@ -221,7 +228,7 @@ else
   warn "git tag v${VERSION} not found"
 fi
 
-# Provenance attestation check — npm attaches sigstore attestations when
+# Provenance attestation check -- npm attaches sigstore attestations when
 # `npm publish --provenance` runs inside GitHub Actions (which is our CI path).
 # A missing attestation is not fatal for local runs (we publish without
 # --provenance there), but in CI it means something regressed.

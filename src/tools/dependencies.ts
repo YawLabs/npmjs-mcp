@@ -60,7 +60,17 @@ export const dependencyTools = [
     handler: async (input: { name: string; version?: string; depth?: number }) => {
       const maxDepth = input.depth ?? 3;
       const runLimited = createLimiter(10);
-      const packumentCache = new Map<string, AbbreviatedPackument>(); // pkg name -> packument
+      // Cache stores the IN-FLIGHT promise (resolving to the packument, or null
+      // on fetch failure). When two parents reference the same package via
+      // different ranges they share a single network round-trip instead of
+      // racing duplicate fetches before the first one populates the cache.
+      const packumentCache = new Map<string, Promise<AbbreviatedPackument | null>>();
+      // Tracks package names whose fetch failed AND whose placeholder is
+      // already recorded in the tree. Without this, a failed transitive
+      // referenced from two parents lands two placeholders (under different
+      // hintKeys) and inflates `unresolvedCount` to 2 for one underlying
+      // failure.
+      const failedPackages = new Set<string>();
       const resolved = new Set<string>(); // "name@hint" keys already queued
       // `failed: true` marks entries the packument fetch never returned for.
       // Their `version` field holds the REQUESTED range, not a resolved version
@@ -74,17 +84,32 @@ export const dependencyTools = [
         if (resolved.has(hintKey) || currentDepth > maxDepth) return;
         resolved.add(hintKey);
 
-        // Cache packuments by package name to avoid duplicate fetches
-        let pkg = packumentCache.get(name);
+        // Share the in-flight fetch across concurrent callers. The warning is
+        // pushed inside the .then so it fires exactly once per failed package
+        // name (the .then callback runs once, regardless of how many awaiters
+        // there are on the resulting promise).
+        let pending = packumentCache.get(name);
+        if (!pending) {
+          pending = runLimited(() => registryGetAbbreviated<AbbreviatedPackument>(`/${encPkg(name)}`)).then((res) => {
+            if (!res.ok) {
+              warnings.push(`Failed to fetch ${name}: ${res.error}`);
+              return null;
+            }
+            return res.data!;
+          });
+          packumentCache.set(name, pending);
+        }
+
+        const pkg = await pending;
         if (!pkg) {
-          const res = await runLimited(() => registryGetAbbreviated<AbbreviatedPackument>(`/${encPkg(name)}`));
-          if (!res.ok) {
-            warnings.push(`Failed to fetch ${name}: ${res.error}`);
+          // Exactly one placeholder per failed package name. Subsequent
+          // parents see the failure but don't inflate `unresolvedCount`
+          // with duplicate entries under different hintKeys.
+          if (!failedPackages.has(name)) {
+            failedPackages.add(name);
             tree[hintKey] = { version: versionHint, dependencies: {}, failed: true };
-            return;
           }
-          pkg = res.data!;
-          packumentCache.set(name, pkg);
+          return;
         }
 
         // Resolve version hint to an actual version

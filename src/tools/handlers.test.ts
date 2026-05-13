@@ -535,6 +535,159 @@ describe("Dependency handlers", () => {
     assert.equal(result.data.totalPackages, 1);
     assert.equal(result.data.unresolvedCount, 1);
   });
+
+  it("npm_dep_tree dedupes the fetch, warning, and placeholder when two parents reference the same failed dep", async () => {
+    // root -> a, b ; both a and b depend on `missing` via different ranges.
+    // Without sharing the in-flight fetch and deduping the placeholder, the
+    // failed packument is fetched twice (concurrent), two warnings are pushed,
+    // and two tree placeholders land under different hintKeys -- inflating
+    // unresolvedCount to 2 for one underlying failure.
+    let missingFetches = 0;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith("/missing")) {
+        missingFetches++;
+        return new Response("Not Found", { status: 404 });
+      }
+      if (url.endsWith("/root")) {
+        return new Response(
+          JSON.stringify({
+            name: "root",
+            "dist-tags": { latest: "1.0.0" },
+            versions: {
+              "1.0.0": {
+                name: "root",
+                version: "1.0.0",
+                dependencies: { a: "1.0.0", b: "1.0.0" },
+              },
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/a")) {
+        return new Response(
+          JSON.stringify({
+            name: "a",
+            "dist-tags": { latest: "1.0.0" },
+            versions: {
+              "1.0.0": { name: "a", version: "1.0.0", dependencies: { missing: "^1.0.0" } },
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/b")) {
+        return new Response(
+          JSON.stringify({
+            name: "b",
+            "dist-tags": { latest: "1.0.0" },
+            versions: {
+              "1.0.0": { name: "b", version: "1.0.0", dependencies: { missing: "~2.0.0" } },
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+
+    const tool = findTool(dependencyTools, "npm_dep_tree");
+    const result = (await tool.handler({ name: "root", depth: 3 })) as {
+      ok: boolean;
+      data: {
+        totalPackages: number;
+        unresolvedCount?: number;
+        tree: Record<string, { version: string; dependencies: Record<string, string>; failed?: true }>;
+        warnings?: string[];
+      };
+    };
+    assert.equal(result.ok, true);
+
+    // The fix: shared in-flight promise => single network round-trip.
+    assert.equal(missingFetches, 1, "missing packument should be fetched exactly once");
+
+    // Single warning, single placeholder, single unresolved count.
+    assert.equal(result.data.warnings?.length, 1, "warning should be deduped");
+    const failedEntries = Object.entries(result.data.tree).filter(([, v]) => v.failed === true);
+    assert.equal(failedEntries.length, 1, "exactly one failed placeholder, not two");
+    assert.equal(result.data.unresolvedCount, 1, "unresolvedCount must be 1, not 2");
+
+    // Resolved nodes: root, a, b.
+    assert.equal(result.data.totalPackages, 3);
+  });
+
+  it("npm_dep_tree fetches a shared successful transitive only once across concurrent parents", async () => {
+    // Same parent shape as above, but `shared` resolves successfully. Without
+    // promise-sharing, both parents miss the cache before the first .set and
+    // both fire `registryGetAbbreviated` -- redundant work on the hot path
+    // for popular transitives like react/express.
+    let sharedFetches = 0;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith("/shared")) {
+        sharedFetches++;
+        return new Response(
+          JSON.stringify({
+            name: "shared",
+            "dist-tags": { latest: "1.5.0" },
+            versions: { "1.5.0": { name: "shared", version: "1.5.0", dependencies: {} } },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/root")) {
+        return new Response(
+          JSON.stringify({
+            name: "root",
+            "dist-tags": { latest: "1.0.0" },
+            versions: {
+              "1.0.0": {
+                name: "root",
+                version: "1.0.0",
+                dependencies: { a: "1.0.0", b: "1.0.0" },
+              },
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/a")) {
+        return new Response(
+          JSON.stringify({
+            name: "a",
+            "dist-tags": { latest: "1.0.0" },
+            versions: {
+              "1.0.0": { name: "a", version: "1.0.0", dependencies: { shared: "^1.0.0" } },
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/b")) {
+        return new Response(
+          JSON.stringify({
+            name: "b",
+            "dist-tags": { latest: "1.0.0" },
+            versions: {
+              "1.0.0": { name: "b", version: "1.0.0", dependencies: { shared: "~1.5.0" } },
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+
+    const tool = findTool(dependencyTools, "npm_dep_tree");
+    const result = (await tool.handler({ name: "root", depth: 3 })) as {
+      ok: boolean;
+      data: { totalPackages: number; tree: Record<string, unknown> };
+    };
+    assert.equal(result.ok, true);
+    assert.equal(sharedFetches, 1, "shared packument should be fetched exactly once across both parents");
+    assert.equal(result.data.totalPackages, 4); // root, a, b, shared
+  });
 });
 
 // ─── Downloads ───

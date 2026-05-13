@@ -11,13 +11,36 @@
  */
 
 import { z } from "zod";
-import { registryDeleteAuth, registryGetAuth, registryPostAuth, registryPutAuth, requireAuth } from "../api.js";
+import {
+  registryDeleteAuth,
+  registryGetAuth,
+  registryPostAuth,
+  registryPutAuth,
+  requireAuth,
+  validatePackageName,
+  validateScope,
+  validateUsername,
+} from "../api.js";
 import { translateError } from "../errors.js";
 
 function classifyHookTarget(target: string): { type: "package" | "scope" | "owner"; name: string } {
   if (target.startsWith("~")) return { type: "owner", name: target.slice(1) };
   if (/^@[^/]+$/.test(target)) return { type: "scope", name: target };
   return { type: "package", name: target };
+}
+
+/**
+ * Validate a hook target after classification. Returns an error message if the
+ * underlying identifier is malformed (e.g. `~@scope/pkg` parses as an owner
+ * target with name `@scope/pkg`, which is not a valid npm username), null if safe.
+ * Catches the bug class where classification succeeds but the payload would be
+ * silently rejected by the registry with an opaque error.
+ */
+function validateHookTarget(target: string): string | null {
+  const { type, name } = classifyHookTarget(target);
+  if (type === "owner") return validateUsername(name);
+  if (type === "scope") return validateScope(name);
+  return validatePackageName(name);
 }
 
 // HMAC signatures protect payload integrity, not confidentiality. An http:// endpoint
@@ -66,6 +89,15 @@ export const hookTools = [
     handler: async (input: { target: string; endpoint: string; secret: string }) => {
       const authErr = requireAuth();
       if (authErr) return authErr;
+
+      const targetErr = validateHookTarget(input.target);
+      if (targetErr) {
+        return {
+          ok: false,
+          status: 400,
+          error: `Invalid hook target '${input.target}': ${targetErr}`,
+        };
+      }
 
       const { type, name } = classifyHookTarget(input.target);
       const res = await registryPostAuth("/-/npm/v1/hooks/hook", {

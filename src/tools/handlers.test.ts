@@ -513,7 +513,8 @@ describe("Dependency handlers", () => {
       ok: boolean;
       data: {
         totalPackages: number;
-        tree: Record<string, { dependencies: Record<string, string> }>;
+        unresolvedCount?: number;
+        tree: Record<string, { version: string; dependencies: Record<string, string>; failed?: true }>;
         warnings?: string[];
       };
     };
@@ -521,8 +522,18 @@ describe("Dependency handlers", () => {
     assert.ok(result.data.warnings);
     assert.equal(result.data.warnings!.length, 1);
     assert.match(result.data.warnings![0], /missing/);
-    // root plus a placeholder for the failed `missing` dep.
-    assert.ok(Object.keys(result.data.tree).length >= 2);
+
+    // The failed dep is in the tree as a placeholder marked `failed: true`.
+    // Its `version` field holds the requested range string, not a resolved version —
+    // the `failed` marker is what tells callers not to read it as a real semver.
+    const failedEntries = Object.entries(result.data.tree).filter(([, v]) => v.failed === true);
+    assert.equal(failedEntries.length, 1, "missing dep should be marked failed in tree");
+    assert.match(failedEntries[0][0], /^missing@/);
+
+    // totalPackages counts only resolved nodes (just the root here);
+    // unresolvedCount surfaces the failure count without forcing callers to scan the tree.
+    assert.equal(result.data.totalPackages, 1);
+    assert.equal(result.data.unresolvedCount, 1);
   });
 });
 
@@ -800,11 +811,34 @@ describe("Auth handlers", () => {
     mockFetch(200, { name: "testuser", email_verified: true, tfa: { pending: false, mode: "auth-and-writes" } });
     const tool = findTool(authTools, "npm_profile");
     const result = (await tool.handler({})) as {
-      data: { emailVerified: boolean; tfa: { enabled: boolean; mode: string } };
+      data: { emailVerified: boolean; tfa: { enabled: boolean; mode: string; pending?: boolean } };
     };
     assert.equal(result.data.emailVerified, true);
     assert.equal(result.data.tfa.enabled, true);
     assert.equal(result.data.tfa.mode, "auth-and-writes");
+    // pending omitted when false — keeps the payload tight and signals "fully enabled"
+    assert.ok(!("pending" in result.data.tfa));
+  });
+
+  it("npm_profile reports tfa.enabled=false when 2FA enrollment is pending", async () => {
+    // `pending: true` means setup started but is not complete — protection isn't
+    // yet in force. npm_check_auth treats this as disabled; npm_profile must
+    // agree (regression: earlier versions reported enabled=true on pending).
+    mockFetch(200, { name: "testuser", tfa: { pending: true, mode: "auth-only" } });
+    const tool = findTool(authTools, "npm_profile");
+    const result = (await tool.handler({})) as {
+      data: { tfa: { enabled: boolean; mode: string; pending?: boolean } };
+    };
+    assert.equal(result.data.tfa.enabled, false);
+    assert.equal(result.data.tfa.mode, "auth-only");
+    assert.equal(result.data.tfa.pending, true);
+  });
+
+  it("npm_profile reports tfa.enabled=false when no tfa object is present", async () => {
+    mockFetch(200, { name: "testuser", tfa: null });
+    const tool = findTool(authTools, "npm_profile");
+    const result = (await tool.handler({})) as { data: { tfa: { enabled: boolean } } };
+    assert.equal(result.data.tfa.enabled, false);
   });
 
   it("npm_tokens calls GET /-/npm/v1/tokens", async () => {

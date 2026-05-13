@@ -125,6 +125,47 @@ describe("npm_hook_add", () => {
     assert.equal(body.type, "owner");
     assert.equal(body.name, "jeff");
   });
+
+  it("rejects ~<scoped> targets — '@scope/pkg' is not a valid username", async () => {
+    // Without target validation `~@scope/pkg` would classify as owner with
+    // name '@scope/pkg' and silently POST a payload the registry rejects with
+    // an opaque error. Reject upfront with an actionable message.
+    const tool = findTool("npm_hook_add");
+    const result = (await tool.handler({
+      target: "~@scope/pkg",
+      endpoint: "https://example.com/h",
+      secret: "s",
+    })) as { ok: boolean; status: number; error: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.match(result.error, /Invalid hook target/);
+    // Must not have hit the network
+    assert.equal(lastRequest, undefined);
+  });
+
+  it("rejects malformed scope targets (e.g. '@.bad')", async () => {
+    const tool = findTool("npm_hook_add");
+    const result = (await tool.handler({
+      target: "@.bad",
+      endpoint: "https://example.com/h",
+      secret: "s",
+    })) as { ok: boolean; status: number };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.equal(lastRequest, undefined);
+  });
+
+  it("rejects malformed package targets (CRLF in the name)", async () => {
+    const tool = findTool("npm_hook_add");
+    const result = (await tool.handler({
+      target: "bad\nname",
+      endpoint: "https://example.com/h",
+      secret: "s",
+    })) as { ok: boolean; status: number };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.equal(lastRequest, undefined);
+  });
 });
 
 describe("npm_hook_list", () => {

@@ -108,16 +108,23 @@ export const registryTools = [
           owner: "mcp_tool: npm_owner_add / npm_owner_remove",
         },
         publish: {
-          method: "CI tag-push",
-          neverRunLocally: true,
-          steps: [
+          preferred: "CI tag-push (when the repo has .github/workflows/release.yml)",
+          ciSteps: [
             "Bump version in package.json",
             "git add package.json && git commit -m 'vX.Y.Z'",
             "git tag vX.Y.Z",
             "git push origin main --follow-tags",
             "gh run list --limit 1 to confirm CI published",
           ],
-          why: "Local npm publish bypasses version discipline and often fails on 2FA. CI uses repo-level NPM_TOKEN.",
+          localSteps: [
+            "Used when the repo has no release.yml, or CI is unavailable.",
+            "Requires an active npm session — the human runs `npm login --auth-type=web` (WebAuthn, agent cannot initiate).",
+            "Once logged in: `bash release.sh X.Y.Z` or `npm publish --access public`.",
+          ],
+          why:
+            "CI publish is reproducible — artifact built on a clean checkout with a scoped automation token, and the tag-push trigger makes every published version correspond to a git tag. " +
+            "Local publish is valid when CI is unavailable or being trimmed; some repos use it as the primary path. " +
+            "Both are real flows — don't treat 'never publish locally' as an absolute rule.",
         },
         auth: {
           verifyToken: "mcp_tool: npm_verify_token (first step when debugging write failures)",

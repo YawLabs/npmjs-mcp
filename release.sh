@@ -206,9 +206,25 @@ fi
 # =============================================================================
 step 7 "Verify"
 
-sleep 3
+# Registry propagation can lag a few seconds after publish succeeds. The earlier
+# `sleep 3` + single `npm view` finished before the version was visible on a slow
+# day, leaving the user with a spurious "may still be propagating" warning even
+# when the release was fine. Mirror the CI smoke test's retry shape (5 attempts,
+# 5s spacing) so the local flow gets the same robustness.
+#
+# Still warn-only on final failure: Step 7 is a verify step, not a gate -- by
+# the time we're here the publish has already succeeded.
+NPM_VERSION=""
+for attempt in 1 2 3 4 5; do
+  NPM_VERSION=$(npm view "@yawlabs/npmjs-mcp@${VERSION}" version 2>/dev/null || echo "")
+  if [ "$NPM_VERSION" = "$VERSION" ]; then
+    break
+  fi
+  if [ "$attempt" -lt 5 ]; then
+    sleep 5
+  fi
+done
 
-NPM_VERSION=$(npm view "@yawlabs/npmjs-mcp@${VERSION}" version 2>/dev/null || echo "")
 if [ "$NPM_VERSION" = "$VERSION" ]; then
   info "npm: @yawlabs/npmjs-mcp@${NPM_VERSION}"
 else

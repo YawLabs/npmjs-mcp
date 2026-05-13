@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
-import { maxSatisfying } from "../api.js";
-import { translateError, validateDeprecationMessage, versionsMatchingRange } from "../errors.js";
+import { versionsSatisfying } from "../api.js";
+import { translateError, validateDeprecationMessage } from "../errors.js";
 import { authTools } from "./auth.js";
 import { registryTools } from "./registry.js";
 import { writeTools } from "./writes.js";
@@ -163,14 +163,14 @@ describe("validateDeprecationMessage", () => {
   });
 });
 
-describe("versionsMatchingRange", () => {
+describe("versionsSatisfying", () => {
   it("returns all versions for '*'", () => {
-    const out = versionsMatchingRange(["1.0.0", "2.0.0", "3.0.0"], "*", maxSatisfying);
+    const out = versionsSatisfying(["1.0.0", "2.0.0", "3.0.0"], "*");
     assert.deepEqual(out, ["1.0.0", "2.0.0", "3.0.0"]);
   });
 
   it("filters by range", () => {
-    const out = versionsMatchingRange(["0.1.0", "0.2.0", "1.0.0"], "<1.0.0", maxSatisfying);
+    const out = versionsSatisfying(["0.1.0", "0.2.0", "1.0.0"], "<1.0.0");
     assert.deepEqual(out.sort(), ["0.1.0", "0.2.0"]);
   });
 });
@@ -418,6 +418,32 @@ describe("npm_unpublish_version", () => {
     const putBody = requests[1].body as { "dist-tags": Record<string, string> };
     // No latest tag at all — better than pointing at a prerelease.
     assert.ok(!("latest" in putBody["dist-tags"]));
+  });
+
+  it("does not crash when the registry returns a packument with no dist-tags object", async () => {
+    // The deletion loop tolerates a missing dist-tags via `|| {}`; the
+    // newLatest assignment must mirror that. Without the guard, this case
+    // throws TypeError reading `.latest` on undefined.
+    const pkg = {
+      _id: "@test/pkg",
+      _rev: "1-abc",
+      name: "@test/pkg",
+      // No "dist-tags" key at all.
+      versions: {
+        "0.1.0": { name: "@test/pkg", version: "0.1.0", dist: { tarball: "https://r/p/-/p-0.1.0.tgz" } },
+        "0.2.0": { name: "@test/pkg", version: "0.2.0" },
+      },
+      maintainers: [{ name: "alice", email: "alice@test.com" }],
+    };
+    mockFetchSequence([
+      { status: 200, body: pkg },
+      { status: 200, body: {} },
+      { status: 200, body: { ...pkg, _rev: "2-def" } },
+      { status: 200, body: {} },
+    ]);
+    const tool = findTool(writeTools, "npm_unpublish_version");
+    const result = (await tool.handler({ name: "@test/pkg", version: "0.1.0", confirm: true })) as { ok: boolean };
+    assert.equal(result.ok, true);
   });
 
   it("resets dist-tags.latest when removing the version it pointed at", async () => {

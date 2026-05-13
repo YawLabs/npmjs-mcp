@@ -62,7 +62,11 @@ export const dependencyTools = [
       const runLimited = createLimiter(10);
       const packumentCache = new Map<string, AbbreviatedPackument>(); // pkg name -> packument
       const resolved = new Set<string>(); // "name@hint" keys already queued
-      const tree: Record<string, { version: string; dependencies: Record<string, string> }> = {};
+      // `failed: true` marks entries the packument fetch never returned for.
+      // Their `version` field holds the REQUESTED range, not a resolved version
+      // — callers must filter on `failed` before reading `version` as a real semver.
+      type TreeNode = { version: string; dependencies: Record<string, string>; failed?: true };
+      const tree: Record<string, TreeNode> = {};
       const warnings: string[] = [];
 
       async function resolve(name: string, versionHint: string, currentDepth: number): Promise<void> {
@@ -76,7 +80,7 @@ export const dependencyTools = [
           const res = await runLimited(() => registryGetAbbreviated<AbbreviatedPackument>(`/${encPkg(name)}`));
           if (!res.ok) {
             warnings.push(`Failed to fetch ${name}: ${res.error}`);
-            tree[hintKey] = { version: versionHint, dependencies: {} };
+            tree[hintKey] = { version: versionHint, dependencies: {}, failed: true };
             return;
           }
           pkg = res.data!;
@@ -118,8 +122,20 @@ export const dependencyTools = [
       const versionHint = input.version ?? "latest";
       await resolve(input.name, versionHint, 1);
 
-      // Find the actual resolved root key in the tree
-      const rootKey = Object.keys(tree).find((k) => k.startsWith(`${input.name}@`)) ?? `${input.name}@${versionHint}`;
+      // Prefer a successfully-resolved root key; fall back to the failed
+      // placeholder only when the root itself couldn't be fetched.
+      const treeEntries = Object.entries(tree);
+      const rootKey =
+        treeEntries.find(([k, v]) => k.startsWith(`${input.name}@`) && !v.failed)?.[0] ??
+        treeEntries.find(([k]) => k.startsWith(`${input.name}@`))?.[0] ??
+        `${input.name}@${versionHint}`;
+
+      // `totalPackages` counts resolved nodes only — failed placeholders carry a
+      // range string in `version` rather than a real version and would otherwise
+      // inflate the count. Surface failures via `unresolvedCount` so callers
+      // don't have to inspect the tree to know about them.
+      const resolvedCount = treeEntries.filter(([, v]) => !v.failed).length;
+      const unresolvedCount = treeEntries.length - resolvedCount;
 
       return {
         ok: true,
@@ -127,7 +143,8 @@ export const dependencyTools = [
         data: {
           root: rootKey,
           depth: maxDepth,
-          totalPackages: Object.keys(tree).length,
+          totalPackages: resolvedCount,
+          ...(unresolvedCount > 0 ? { unresolvedCount } : {}),
           tree,
           ...(warnings.length > 0 ? { warnings } : {}),
         },

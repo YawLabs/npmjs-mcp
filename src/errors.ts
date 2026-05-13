@@ -69,17 +69,3 @@ export function validateDeprecationMessage(msg: string): string | null {
   }
   return null;
 }
-
-/**
- * Filter a version list to those satisfying a semver range.
- * Uses the existing maxSatisfying helper iteratively; O(n) for n versions.
- * Treats "*" or "" as match-all.
- */
-export function versionsMatchingRange(
-  versions: string[],
-  range: string,
-  maxSatisfying: (vs: string[], r: string) => string | null,
-): string[] {
-  if (range === "*" || range === "") return [...versions];
-  return versions.filter((v) => maxSatisfying([v], range) === v);
-}

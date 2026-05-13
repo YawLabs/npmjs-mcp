@@ -16,7 +16,6 @@ import {
   encTag,
   encTeam,
   encUser,
-  maxSatisfying,
   registryDeleteAuth,
   registryGetAuth,
   registryPostAuth,
@@ -26,8 +25,9 @@ import {
   validateTag,
   validateTeam,
   validateUsername,
+  versionsSatisfying,
 } from "../api.js";
-import { translateError, validateDeprecationMessage, versionsMatchingRange } from "../errors.js";
+import { translateError, validateDeprecationMessage } from "../errors.js";
 import type { Packument } from "../types.js";
 
 // ─── Packument helpers ──────────────────────────────────
@@ -118,7 +118,7 @@ export const writeTools = [
       const packument = pRes.data as Packument;
       const allVersions = Object.keys(packument.versions || {});
       const range = input.versionRange ?? "*";
-      const affected = versionsMatchingRange(allVersions, range, maxSatisfying);
+      const affected = versionsSatisfying(allVersions, range);
 
       if (affected.length === 0) {
         return {
@@ -179,7 +179,7 @@ export const writeTools = [
       const packument = pRes.data as Packument;
       const allVersions = Object.keys(packument.versions || {});
       const range = input.versionRange ?? "*";
-      const affected = versionsMatchingRange(allVersions, range, maxSatisfying);
+      const affected = versionsSatisfying(allVersions, range);
 
       if (affected.length === 0) {
         return {
@@ -289,9 +289,15 @@ export const writeTools = [
       }
 
       // If we just removed the version that 'latest' pointed at, reset it to highest remaining.
+      // The delete loop above tolerates a missing dist-tags object via `|| {}`; mirror that
+      // here so a packument without dist-tags (registry never returns this in practice, but
+      // the GET could theoretically race) doesn't throw on the assignment.
       if (latestBefore === input.version) {
         const newLatest = highestVersion(Object.keys(packument.versions));
-        if (newLatest) packument["dist-tags"].latest = newLatest;
+        if (newLatest) {
+          packument["dist-tags"] ||= {};
+          packument["dist-tags"].latest = newLatest;
+        }
       }
 
       // Couch metadata must not be echoed back.

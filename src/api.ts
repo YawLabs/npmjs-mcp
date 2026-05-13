@@ -469,54 +469,101 @@ function parseRange(r: string): SemverRange | null {
   return parseSingleConstraint(r.trim());
 }
 
+/** A single sub-range (between `||` separators) with its prerelease anchor. */
+interface CompiledSubRange {
+  parsed: SemverRange;
+  // When the sub-range names a prerelease (e.g. `^1.0.0-beta`), only
+  // prereleases with the same major.minor.patch as this anchor are eligible.
+  // Hyphen ranges (`1.0.0 - 2.0.0`) have whitespace around the dash and do
+  // NOT set an anchor. Matches npm semver: 1.5.0-alpha does NOT satisfy
+  // ^1.0.0-beta.
+  prereleaseAnchor: SemVer | null;
+}
+
+/** A fully-compiled range — the cleaned input string plus parsed sub-ranges. */
+interface CompiledRange {
+  /** Trimmed, leading `v` stripped — used for the exact-match fast path. */
+  cleaned: string;
+  subRanges: CompiledSubRange[];
+}
+
+/**
+ * Compile a range string into a structure that can be matched against many
+ * versions without re-parsing. Splits on `||`, parses each sub-range, and
+ * extracts the prerelease anchor (if any) from each sub-range's source.
+ */
+function compileRange(range: string): CompiledRange {
+  const cleaned = range.trim().replace(/^v/, "");
+  const subs = cleaned.split("||").map((s) => s.trim());
+  const subRanges: CompiledSubRange[] = [];
+  for (const sub of subs) {
+    const parsed = parseRange(sub);
+    if (!parsed) continue;
+    const anchorMatch = sub.match(/(\d+)\.(\d+)\.(\d+)-/);
+    const prereleaseAnchor: SemVer | null = anchorMatch
+      ? [Number(anchorMatch[1]), Number(anchorMatch[2]), Number(anchorMatch[3])]
+      : null;
+    subRanges.push({ parsed, prereleaseAnchor });
+  }
+  return { cleaned, subRanges };
+}
+
+/**
+ * Test a single version against a compiled range. Returns the parsed SemVer
+ * tuple if the version satisfies any sub-range, or null otherwise. Returning
+ * the tuple lets callers compare versions without re-parsing.
+ */
+function versionSatisfiesCompiled(version: string, compiled: CompiledRange): SemVer | null {
+  const vp = parseSemver(version);
+  if (!vp) return null;
+  const isPrerelease = version.includes("-");
+  for (const { parsed, prereleaseAnchor } of compiled.subRanges) {
+    if (isPrerelease) {
+      if (!prereleaseAnchor) continue;
+      if (vp[0] !== prereleaseAnchor[0] || vp[1] !== prereleaseAnchor[1] || vp[2] !== prereleaseAnchor[2]) continue;
+    }
+    if (parsed.min && cmpSemver(vp, parsed.min) < 0) continue;
+    if (parsed.max && cmpSemver(vp, parsed.max) >= 0) continue;
+    return vp;
+  }
+  return null;
+}
+
 /**
  * Find the highest version from `versions` that satisfies `range`.
  * Handles ^, ~, >=, >, <=, <, =, x-ranges, hyphen ranges (1.0.0 - 2.0.0),
  * compound ranges (>=1.0.0 <2.0.0), and || unions. Falls back to null if no match.
  */
 export function maxSatisfying(versions: string[], range: string): string | null {
-  // Strip leading whitespace/v prefix
-  const r = range.trim().replace(/^v/, "");
+  const compiled = compileRange(range);
 
-  // Exact version
-  if (versions.includes(r)) return r;
-
-  // Split on || for union ranges, find best across all sub-ranges
-  const subRanges = r.split("||").map((s) => s.trim());
+  // Exact version — matches the historical fast path for callers like
+  // `maxSatisfying(['1.2.3'], '1.2.3')`.
+  if (versions.includes(compiled.cleaned)) return compiled.cleaned;
 
   let best: string | null = null;
   let bestParsed: SemVer | null = null;
 
-  for (const sub of subRanges) {
-    const parsed = parseRange(sub);
-    if (!parsed) continue;
-
-    // A prerelease tag is `-<alphanumeric>` directly attached to a version
-    // (e.g. `^1.0.0-beta`). Hyphen ranges (`1.0.0 - 2.0.0`) have whitespace
-    // around the dash, so they must not be misread as targeting prereleases.
-    // When a range names a prerelease, only prereleases with the same
-    // major.minor.patch as the anchor are eligible -- this matches npm semver,
-    // which would NOT consider 1.5.0-alpha to satisfy ^1.0.0-beta.
-    const anchorMatch = sub.match(/(\d+)\.(\d+)\.(\d+)-/);
-    const prereleaseAnchor: SemVer | null = anchorMatch
-      ? [Number(anchorMatch[1]), Number(anchorMatch[2]), Number(anchorMatch[3])]
-      : null;
-
-    for (const v of versions) {
-      const vp = parseSemver(v);
-      if (!vp) continue;
-      if (v.includes("-")) {
-        if (!prereleaseAnchor) continue;
-        if (vp[0] !== prereleaseAnchor[0] || vp[1] !== prereleaseAnchor[1] || vp[2] !== prereleaseAnchor[2]) continue;
-      }
-      if (parsed.min && cmpSemver(vp, parsed.min) < 0) continue;
-      if (parsed.max && cmpSemver(vp, parsed.max) >= 0) continue;
-      if (!bestParsed || cmpSemver(vp, bestParsed) > 0) {
-        best = v;
-        bestParsed = vp;
-      }
+  for (const v of versions) {
+    const vp = versionSatisfiesCompiled(v, compiled);
+    if (!vp) continue;
+    if (!bestParsed || cmpSemver(vp, bestParsed) > 0) {
+      best = v;
+      bestParsed = vp;
     }
   }
 
   return best;
+}
+
+/**
+ * Return every version from `versions` that satisfies `range`, preserving
+ * input order. Compiles the range once, then filters — O(n) for n versions
+ * instead of the O(n^2) shape of calling `maxSatisfying` per version.
+ * Treats "*" and "" as match-all.
+ */
+export function versionsSatisfying(versions: string[], range: string): string[] {
+  if (range === "*" || range === "") return [...versions];
+  const compiled = compileRange(range);
+  return versions.filter((v) => versionSatisfiesCompiled(v, compiled) !== null);
 }

@@ -44,6 +44,18 @@ export const authTools = [
       if (!res.ok) return translateError(res, { op: "profile" });
 
       const p = res.data!;
+      // `pending: true` means a 2FA enrollment was started but not completed —
+      // protection is not yet in force. Match the reading used in workflows.ts
+      // (npm_check_auth / npm_publish_preflight): `enabled` iff `tfa && !pending`.
+      // Earlier this handler reported `enabled: true` on pending — divergence let
+      // npm_profile and npm_check_auth disagree about the same token's 2FA state.
+      const tfa = p.tfa
+        ? {
+            enabled: !p.tfa.pending,
+            mode: p.tfa.mode,
+            ...(p.tfa.pending ? { pending: true } : {}),
+          }
+        : { enabled: false };
       return {
         ok: true,
         status: 200,
@@ -52,7 +64,7 @@ export const authTools = [
           email: p.email,
           emailVerified: p.email_verified,
           fullname: p.fullname,
-          tfa: p.tfa ? { enabled: true, mode: p.tfa.mode, pending: p.tfa.pending } : { enabled: false },
+          tfa,
           homepage: p.homepage,
           github: p.github,
           twitter: p.twitter,

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.4] — 2026-05-13
+
+### Fixed
+- `npm_profile` `tfa.enabled` now mirrors `npm_check_auth` -- enabled iff `tfa && !pending`. Previously the two tools could disagree about the same token's 2FA state (npm_profile reported `enabled: true` while enrollment was still pending; npm_check_auth treated pending as disabled). Pending state preserved as an explicit field.
+- `npm_dep_tree` failed transitive fetches now carry `failed: true` on their tree entry. `totalPackages` counts only resolved nodes; a new `unresolvedCount` surfaces failures separately. Previously failed entries were keyed by the requested range string and silently inflated `totalPackages`.
+- `npm_unpublish_version` guards against the registry returning a packument with no `dist-tags` object before reassigning `latest`. The deletion loop above already tolerated it via `|| {}`; the assignment now mirrors that.
+- `npm_hook_add` validates the hook target after classification. `~@scope/pkg`, `@.bad`, `bad\nname`, and similar shapes now reject upfront with an actionable 400 instead of being POSTed and opaquely rejected by the registry.
+
+### Changed
+- `npm_ops_playbook` publish guidance updated. The misleading `neverRunLocally: true` is gone; the playbook now describes both CI tag-push (preferred) and local `release.sh` as valid publish paths, since some YawLabs repos rely on the local flow.
+- `versionsSatisfying(versions, range)` now exported from `api.ts`. Replaces `versionsMatchingRange(versions, range, maxSatisfying)` (removed from `errors.ts`), which re-parsed the range once per version. Same observable behavior at the MCP tool surface; cheaper for large packuments.
+- `release.sh` Step 7 npm-view verify now retries up to 5 times with 5s spacing instead of a single 3s sleep, matching the CI smoke test pattern. Still warn-only on final failure.
+
+### Security
+- Dev dependencies: `fast-uri` 3.1.0 → 3.1.2 (fixes GHSA-q3j6-qgpj-74h6, GHSA-v39h-62p7-jpjc -- both high); `hono` 4.12.14 → 4.12.18 (fixes GHSA-69xw-7hcm-h432, GHSA-p77w-8qqv-26rm, GHSA-qp7p-654g-cw7p, GHSA-hm8q-7f3q-5f36 -- 3 medium + 1 low). Not reachable from the published bundle, but the SCA tooling was flagging them.
+
+### Other
+- `@biomejs/biome` 2.4.12 → 2.4.14 and `zod` patched via Dependabot.
+
 ## [0.11.2] — 2026-05-04
 
 ### Fixed

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.5] — 2026-05-13
+
+### Fixed
+- `npm_dep_tree` no longer double-counts a failed transitive when two parents reference it via different ranges. Previously the same packument was fetched twice in parallel, two warnings were pushed, two placeholder entries landed under different hintKeys, and `unresolvedCount` reported 2 for one underlying failure. The cache now stores the in-flight Promise so concurrent callers share a single round-trip, and a sibling `failedPackages` set gates the placeholder write to exactly one entry per failed name.
+- The same change dedupes successful fetches. A shared transitive (e.g. `react`, `express`) referenced by multiple parents now triggers one network round-trip instead of N -- the cache used to populate only after the await, so concurrent callers all missed and all fired duplicate requests.
+
 ## [0.11.4] — 2026-05-13
 
 ### Fixed

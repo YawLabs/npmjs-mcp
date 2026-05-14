@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.6] — 2026-05-13
+
+### Documentation
+- README: tool count corrected from 63 to 64 (headline, "Why this one?" bullet, and section header all reflect the actual count from `tools.test.ts`).
+- README: "Access & orgs" section was missing `npm_team_members` -- row added and the section count updated from 6 to 7.
+- README: Requirements lifted from "Node.js 18+" to "Node.js 20+" to match `package.json` (`engines.node: ">=20"`) and the CI matrix (20 + 22 only).
+- README: `npm_compare` example used `{ names: [...] }`; the actual schema is `{ packages: [...] }`. Copy-paste from the README would have failed Zod validation.
+
+No code changes. Doc-only release so the npm page reflects the corrected README.
+
 ## [0.11.5] — 2026-05-13
 
 ### Fixed

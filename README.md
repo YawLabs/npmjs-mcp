@@ -9,7 +9,7 @@
 
 Built and maintained by [Yaw Labs](https://yaw.sh).
 
-[![Add to mcp.hosting](https://mcp.hosting/install-button.svg)](https://mcp.hosting/install?name=npm&command=npx&args=-y%2C%40yawlabs%2Fnpmjs-mcp&env=NPM_TOKEN&description=npm%20registry%20-%20package%20intel%2C%20security%2C%20dependency%20analysis%2C%20write%20ops&source=https%3A%2F%2Fgithub.com%2FYawLabs%2Fnpmjs-mcp)
+[![Add to mcp.hosting](https://mcp.hosting/install-button.svg)](https://mcp.hosting/install?name=npm&command=npx&args=-y%2C%40yawlabs%2Fnpmjs-mcp&description=npm%20registry%20-%20package%20intel%2C%20security%2C%20dependency%20analysis%2C%20write%20ops&source=https%3A%2F%2Fgithub.com%2FYawLabs%2Fnpmjs-mcp)
 
 One click adds this to your [mcp.hosting](https://mcp.hosting) account so it syncs to every MCP client you use. Or install manually below.
 

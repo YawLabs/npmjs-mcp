@@ -5,7 +5,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/YawLabs/npmjs-mcp)](https://github.com/YawLabs/npmjs-mcp/stargazers)
 [![CI](https://github.com/YawLabs/npmjs-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/YawLabs/npmjs-mcp/actions/workflows/ci.yml) [![Release](https://github.com/YawLabs/npmjs-mcp/actions/workflows/release.yml/badge.svg)](https://github.com/YawLabs/npmjs-mcp/actions/workflows/release.yml)
 
-**Run npm registry operations from Claude Code, Cursor, and any MCP client.** 63 tools covering the full registry surface: package intelligence, security audits, dependency analysis, org/team management, and the write ops that normally fight you locally (`npm deprecate`, `npm dist-tag`, `npm owner`, `npm unpublish`).
+**Run npm registry operations from Claude Code, Cursor, and any MCP client.** 64 tools covering the full registry surface: package intelligence, security audits, dependency analysis, org/team management, and the write ops that normally fight you locally (`npm deprecate`, `npm dist-tag`, `npm owner`, `npm unpublish`).
 
 Built and maintained by [Yaw Labs](https://yaw.sh).
 
@@ -17,7 +17,7 @@ One click adds this to your [mcp.hosting](https://mcp.hosting) account so it syn
 
 Other npm MCP servers wrap `npm search` and call it done. This one doesn't.
 
-- **Full registry HTTP surface** — 63 tools across reads, writes, orgs, teams, hooks, provenance, trusted publishers, and ops health. Not just `npm view`.
+- **Full registry HTTP surface** — 64 tools across reads, writes, orgs, teams, hooks, provenance, trusted publishers, and ops health. Not just `npm view`.
 - **Write ops that actually work in agents** — `npm_deprecate`, `npm_dist_tag_set`, `npm_owner_add`, `npm_unpublish_version` go directly to the HTTP API with your token. No 2FA prompts, no `--otp` hunts, no `ENEEDAUTH` from a session-bound `.npmrc`.
 - **Agent-aware failure surfacing** — write tools detect non-interactive context and return specific human-runnable commands (`npm login --auth-type=web`) instead of looping on unrecoverable errors.
 - **Safety by default** — `npm_unpublish_*` requires `confirm: true`. `npm_owner_remove` blocks you from locking yourself out. `npm_deprecate` validates the message format (em-dash, no trailing period) that npmjs.com's API actually accepts.
@@ -112,7 +112,7 @@ That's it. Now ask your AI assistant:
 
 Use the same JSON block shown above in any of these.
 
-## Tools (63)
+## Tools (64)
 
 ### Search (1)
 - **npm_search** — Search the npm registry with qualifiers (keywords, author, scope).
@@ -163,13 +163,14 @@ Use the same JSON block shown above in any of these.
 - **npm_verify_token** — One-call capability check. **Call this first** when debugging write failures.
 - **npm_user_packages** — Packages published by a user.
 
-### Access & orgs (6, requires NPM_TOKEN)
+### Access & orgs (7, requires NPM_TOKEN)
 - **npm_collaborators** — Package collaborators and permissions.
 - **npm_package_access** — Package access settings.
 - **npm_org_members** — Org members and roles.
 - **npm_org_packages** — Org packages.
 - **npm_org_teams** — Org teams.
 - **npm_team_packages** — Team package permissions.
+- **npm_team_members** — Team members and roles.
 
 ### Workflows (2)
 - **npm_check_auth** — Auth health check with headless publish feasibility.
@@ -234,7 +235,7 @@ Call `npm_ops_playbook` at the start of any session to get the up-to-date matrix
 
 ```
 > "Compare fastify vs express vs koa for maintenance health"
-→ npm_compare({ names: ["fastify", "express", "koa"] })
+→ npm_compare({ packages: ["fastify", "express", "koa"] })
 → npm_health({ name: "fastify" }) // ...etc
 ```
 
@@ -276,7 +277,7 @@ Call `npm_ops_playbook` at the start of any session to get the up-to-date matrix
 
 ## Requirements
 
-- Node.js 18+
+- Node.js 20+ (the CI matrix tests 20 and 22; `package.json` declares `engines.node: ">=20"`)
 - (Optional) npm access token for write operations
 
 ## Contributing

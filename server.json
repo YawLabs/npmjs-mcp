@@ -1,0 +1,16 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.YawLabs/npmjs-mcp",
+  "description": "npm registry MCP server — package intelligence, security audits, dependency analysis",
+  "version": "0.11.7",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@yawlabs/npmjs-mcp",
+      "version": "0.11.7",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

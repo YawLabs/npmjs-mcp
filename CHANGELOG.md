@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.8] -- 2026-05-16
+
+### Fixed
+- `npm_verify_token` now honors `tfa.pending` -- enabled iff `tfa && !pending`. Previously the handler reported `enabled: true` while enrollment was still pending, while `npm_profile` and `npm_check_auth` (both fixed earlier) treated pending as disabled. Three tools reading the same token's 2FA state now agree.
+
+### Added
+- `npm_health` assessment gains a `VULNERABLE` state, layered between `DEPRECATED` and `STALE` so an active package with open CVEs is no longer reported as `ACTIVE`.
+- Boot-time duplicate-tool-name guard. A rename refactor that lands a name collision now fails at startup with the offending name instead of being silently overridden by `server.tool()`.
+
+### Changed
+- `npm_license_check` matches SPDX identifiers case-insensitively (so `mit` and `MIT` resolve to the same entry). The original-case `allowed` list is still echoed back to the caller. The tool description now documents that SPDX expressions like `(MIT OR Apache-2.0)` require verbatim allow-list entries.
+
+### Documentation
+- `npm_deprecate` `versionRange` description warns that bare integers are x-ranges (e.g. `'0'` means `'0.x.x'`, not exact version 0). `'=1.2.3'` shown as the exact-version form.
+- `compileRange` carries an inline note on the first-match prerelease-anchor heuristic and the range shapes that would require a fuller comparator parser.
+
 ## [0.11.6] — 2026-05-13
 
 ### Documentation

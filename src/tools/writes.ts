@@ -103,7 +103,11 @@ export const writeTools = [
       versionRange: z
         .string()
         .optional()
-        .describe("Semver range. Omit to deprecate ALL versions. Example: '<1.0.0' or '0.3.x'."),
+        .describe(
+          "Semver range. Omit to deprecate ALL versions. Example: '<1.0.0' or '0.3.x'. " +
+            "Standard semver applies — bare integers are x-ranges (e.g. '0' means '0.x.x', not exact version 0). " +
+            "For a single version use '=1.2.3'.",
+        ),
     }),
     handler: async (input: { name: string; message: string; versionRange?: string }) => {
       const authErr = requireAuth();

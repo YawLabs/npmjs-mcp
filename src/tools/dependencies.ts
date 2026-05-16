@@ -179,7 +179,9 @@ export const dependencyTools = [
   {
     name: "npm_license_check",
     description:
-      "Check the license of a package and its direct production dependencies. Flags missing or non-standard licenses.",
+      "Check the license of a package and its direct production dependencies. Flags missing or non-standard licenses. " +
+      "Matches single SPDX license identifiers case-insensitively (so 'mit' and 'MIT' both match). " +
+      "SPDX expressions like '(MIT OR Apache-2.0)' are NOT decomposed — they are flagged unless added to `allowed` verbatim.",
     annotations: {
       title: "Check licenses",
       readOnlyHint: true,
@@ -231,20 +233,23 @@ export const dependencyTools = [
         }),
       );
 
-      const allowedSet = new Set(
-        input.allowed ?? ["MIT", "ISC", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "0BSD", "Unlicense"],
-      );
+      const defaultAllowed = ["MIT", "ISC", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "0BSD", "Unlicense"];
+      const allowedInput = input.allowed ?? defaultAllowed;
+      // SPDX identifiers are case-insensitive per spec; normalize both sides
+      // so `mit` and `MIT` match the same entry. Expression strings like
+      // `(MIT OR Apache-2.0)` still require a verbatim opt-in via `allowed`.
+      const allowedSet = new Set(allowedInput.map((l) => l.toLowerCase()));
 
       const results = [{ name: pkg.name, version: pkg.version, license: pkg.license ?? "UNKNOWN" }, ...depLicenses];
 
-      const flagged = results.filter((r) => !allowedSet.has(r.license));
+      const flagged = results.filter((r) => !allowedSet.has(r.license.toLowerCase()));
 
       return {
         ok: true,
         status: 200,
         data: {
           total: results.length,
-          allowed: [...allowedSet],
+          allowed: allowedInput,
           flagged: flagged.length,
           packages: results,
           issues: flagged.length > 0 ? flagged : undefined,

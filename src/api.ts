@@ -499,6 +499,12 @@ function compileRange(range: string): CompiledRange {
   for (const sub of subs) {
     const parsed = parseRange(sub);
     if (!parsed) continue;
+    // First-match heuristic: a compound sub-range with multiple prereleases
+    // (e.g. `>=1.0.0-beta <2.0.0-rc.1`) anchors on whichever N.N.N- appears
+    // first in the source string. Sufficient for the canonical npm range
+    // shapes this parser targets; a hand-built sub-range that reverses the
+    // comparator order could anchor on the wrong tuple. Replace with a full
+    // comparator parser if the call sites ever broaden beyond registry input.
     const anchorMatch = sub.match(/(\d+)\.(\d+)\.(\d+)-/);
     const prereleaseAnchor: SemVer | null = anchorMatch
       ? [Number(anchorMatch[1]), Number(anchorMatch[2]), Number(anchorMatch[3])]

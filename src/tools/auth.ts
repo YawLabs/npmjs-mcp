@@ -152,7 +152,17 @@ export const authTools = [
         };
       }
 
-      const tfa = profile.ok && profile.data?.tfa ? { enabled: true, mode: profile.data.tfa.mode } : { enabled: false };
+      // `pending: true` means a 2FA enrollment was started but not completed —
+      // protection is not yet in force. Mirror the reading in npm_profile and
+      // npm_check_auth so all three tools agree on the same token's 2FA state.
+      const tfaData = profile.ok ? profile.data?.tfa : null;
+      const tfa = tfaData
+        ? {
+            enabled: !tfaData.pending,
+            mode: tfaData.mode,
+            ...(tfaData.pending ? { pending: true } : {}),
+          }
+        : { enabled: false };
 
       return {
         ok: true,

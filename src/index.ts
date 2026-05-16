@@ -57,6 +57,22 @@ const allTools = [
   ...hookTools,
 ];
 
+// Boot-time guard: a duplicate tool name would be silently overridden (or
+// throw cryptically) by server.tool() depending on SDK version. Fail loudly
+// at startup with the offending names so a rename refactor that lands a
+// collision is caught before the server ever connects.
+{
+  const seen = new Set<string>();
+  const duplicates: string[] = [];
+  for (const t of allTools) {
+    if (seen.has(t.name)) duplicates.push(t.name);
+    else seen.add(t.name);
+  }
+  if (duplicates.length > 0) {
+    throw new Error(`Duplicate tool name(s) registered: ${[...new Set(duplicates)].join(", ")}`);
+  }
+}
+
 const server = new McpServer({
   name: "@yawlabs/npmjs-mcp",
   version,

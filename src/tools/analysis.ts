@@ -166,13 +166,19 @@ export const analysisTools = [
             isDeprecated,
             isStale,
           },
+          // Holistic single-string verdict layered priority-first: a deprecated
+          // package supersedes everything (don't use it), a vulnerable package
+          // supersedes maintenance signals (active development doesn't undo a
+          // CVE), then staleness, recency, and the catch-all.
           assessment: isDeprecated
             ? "DEPRECATED"
-            : isStale
-              ? "STALE"
-              : daysSinceLastPublish !== null && daysSinceLastPublish < 90
-                ? "ACTIVE"
-                : "MAINTENANCE",
+            : vulnerabilityCount !== null && vulnerabilityCount > 0
+              ? "VULNERABLE"
+              : isStale
+                ? "STALE"
+                : daysSinceLastPublish !== null && daysSinceLastPublish < 90
+                  ? "ACTIVE"
+                  : "MAINTENANCE",
         },
       } as ApiResponse;
     },

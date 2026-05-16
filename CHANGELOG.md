@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.9] -- 2026-05-16
+
+### Changed
+- Release process: `release.sh` now sources release notes from the `## [VERSION]` section of `CHANGELOG.md` when present, so the GitHub release page mirrors the project narrative (Fixed / Added / Changed / Documentation) instead of two raw commit subjects. Falls back to the prior git-log-derived bullets when no CHANGELOG entry exists for the version. No changes to the published npm package itself.
+
 ## [0.11.8] -- 2026-05-16
 
 ### Fixed

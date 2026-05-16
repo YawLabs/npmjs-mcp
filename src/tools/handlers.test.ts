@@ -383,6 +383,41 @@ describe("Dependency handlers", () => {
     assert.ok(result.data.allowed.includes("GPL-3.0"));
   });
 
+  it("npm_license_check matches SPDX ids case-insensitively", async () => {
+    // SPDX identifiers are case-insensitive per spec; a package declaring
+    // `license: "mit"` (lowercase) must not be flagged when the allow-list
+    // names "MIT" (uppercase canonical), and vice versa for a lowercased
+    // allow-list entry against an upstream `Apache-2.0` declaration.
+    mockFetchMulti({
+      "/express/latest": {
+        name: "express",
+        version: "4.18.2",
+        dependencies: { lowerlic: "1.0.0", upperlic: "1.0.0" },
+        license: "MIT",
+      },
+      "/lowerlic/1.0.0": { name: "lowerlic", version: "1.0.0", license: "mit" },
+      "/lowerlic": {
+        name: "lowerlic",
+        "dist-tags": { latest: "1.0.0" },
+        versions: { "1.0.0": { name: "lowerlic", version: "1.0.0" } },
+      },
+      "/upperlic/1.0.0": { name: "upperlic", version: "1.0.0", license: "Apache-2.0" },
+      "/upperlic": {
+        name: "upperlic",
+        "dist-tags": { latest: "1.0.0" },
+        versions: { "1.0.0": { name: "upperlic", version: "1.0.0" } },
+      },
+    });
+    const tool = findTool(dependencyTools, "npm_license_check");
+    const result = (await tool.handler({ name: "express", allowed: ["MIT", "apache-2.0"] })) as {
+      data: { flagged: number; allowed: string[] };
+    };
+    assert.equal(result.data.flagged, 0);
+    // The echoed `allowed` preserves the original case the caller passed —
+    // normalization is internal to the comparison, not the response shape.
+    assert.deepEqual(result.data.allowed, ["MIT", "apache-2.0"]);
+  });
+
   it("npm_dep_tree walks transitive deps up to the requested depth", async () => {
     // Graph: root@1.0.0 -> a@^1.0.0, b@^1.0.0 ; a@1.0.0 -> c@^1.0.0 ; b/c: leaves
     mockFetchMulti({
@@ -811,6 +846,58 @@ describe("Analysis handlers", () => {
     assert.ok(requests.some((r) => r.url.includes(DOWNLOADS)));
   });
 
+  it("npm_health assessment reports VULNERABLE when the latest version has open advisories", async () => {
+    // Recently-published packument (so it would otherwise be ACTIVE) + a
+    // non-empty advisory list. The assessment must surface the CVEs rather
+    // than masking them under the maintenance signal.
+    const recent = new Date(Date.now() - 7 * 86_400_000).toISOString();
+    mockFetchMulti({
+      // Audit endpoint goes through registryPost to /-/npm/v1/security/advisories/bulk
+      "/-/npm/v1/security/advisories/bulk": {
+        express: [{ severity: "high", title: "CVE-2024-0001" }],
+      },
+      "/downloads/point/last-week": { downloads: 1000, package: "express" },
+      "/downloads/point/last-month": { downloads: 4000, package: "express" },
+      "/express": {
+        name: "express",
+        "dist-tags": { latest: "4.18.2" },
+        versions: { "4.18.2": { version: "4.18.2", license: "MIT" } },
+        time: { created: "2010-01-01", modified: recent, "4.18.2": recent },
+        maintainers: [{ name: "dougwilson" }],
+      },
+    });
+    const tool = findTool(analysisTools, "npm_health");
+    const result = (await tool.handler({ name: "express" })) as {
+      data: { assessment: string; signals: { vulnerabilityCount: number | null } };
+    };
+    assert.equal(result.data.signals.vulnerabilityCount, 1);
+    assert.equal(result.data.assessment, "VULNERABLE");
+  });
+
+  it("npm_health assessment stays ACTIVE when there are zero advisories on a recent publish", async () => {
+    // Sanity check that the VULNERABLE branch only fires on real findings —
+    // an empty advisory array (the common case) must not regress to VULNERABLE.
+    const recent = new Date(Date.now() - 7 * 86_400_000).toISOString();
+    mockFetchMulti({
+      "/-/npm/v1/security/advisories/bulk": { express: [] },
+      "/downloads/point/last-week": { downloads: 1000, package: "express" },
+      "/downloads/point/last-month": { downloads: 4000, package: "express" },
+      "/express": {
+        name: "express",
+        "dist-tags": { latest: "4.18.2" },
+        versions: { "4.18.2": { version: "4.18.2", license: "MIT" } },
+        time: { created: "2010-01-01", modified: recent, "4.18.2": recent },
+        maintainers: [{ name: "dougwilson" }],
+      },
+    });
+    const tool = findTool(analysisTools, "npm_health");
+    const result = (await tool.handler({ name: "express" })) as {
+      data: { assessment: string; signals: { vulnerabilityCount: number | null } };
+    };
+    assert.equal(result.data.signals.vulnerabilityCount, 0);
+    assert.equal(result.data.assessment, "ACTIVE");
+  });
+
   it("npm_maintainers returns maintainer list", async () => {
     mockFetch(200, {
       ...packument,
@@ -990,6 +1077,50 @@ describe("Auth handlers", () => {
   it("npm_profile reports tfa.enabled=false when no tfa object is present", async () => {
     mockFetch(200, { name: "testuser", tfa: null });
     const tool = findTool(authTools, "npm_profile");
+    const result = (await tool.handler({})) as { data: { tfa: { enabled: boolean } } };
+    assert.equal(result.data.tfa.enabled, false);
+  });
+
+  it("npm_verify_token reports tfa.enabled=true with mode when 2FA is active", async () => {
+    // /-/whoami + /-/npm/v1/user fire in parallel; mockFetchMulti routes by path.
+    mockFetchMulti({
+      "/-/whoami": { username: "testuser" },
+      "/-/npm/v1/user": { name: "testuser", tfa: { pending: false, mode: "auth-and-writes" } },
+    });
+    const tool = findTool(authTools, "npm_verify_token");
+    const result = (await tool.handler({})) as {
+      data: { tokenValid: boolean; tfa: { enabled: boolean; mode?: string; pending?: boolean } };
+    };
+    assert.equal(result.data.tokenValid, true);
+    assert.equal(result.data.tfa.enabled, true);
+    assert.equal(result.data.tfa.mode, "auth-and-writes");
+    // pending omitted when false — matches the shape npm_profile emits.
+    assert.ok(!("pending" in result.data.tfa));
+  });
+
+  it("npm_verify_token reports tfa.enabled=false when 2FA enrollment is pending", async () => {
+    // Regression guard: an earlier version of this handler reported enabled=true
+    // whenever the tfa object was present, disagreeing with npm_profile and
+    // npm_check_auth. All three must read the same token's 2FA state the same way.
+    mockFetchMulti({
+      "/-/whoami": { username: "testuser" },
+      "/-/npm/v1/user": { name: "testuser", tfa: { pending: true, mode: "auth-only" } },
+    });
+    const tool = findTool(authTools, "npm_verify_token");
+    const result = (await tool.handler({})) as {
+      data: { tfa: { enabled: boolean; mode?: string; pending?: boolean } };
+    };
+    assert.equal(result.data.tfa.enabled, false);
+    assert.equal(result.data.tfa.mode, "auth-only");
+    assert.equal(result.data.tfa.pending, true);
+  });
+
+  it("npm_verify_token reports tfa.enabled=false when no tfa object is present", async () => {
+    mockFetchMulti({
+      "/-/whoami": { username: "testuser" },
+      "/-/npm/v1/user": { name: "testuser", tfa: null },
+    });
+    const tool = findTool(authTools, "npm_verify_token");
     const result = (await tool.handler({})) as { data: { tfa: { enabled: boolean } } };
     assert.equal(result.data.tfa.enabled, false);
   });

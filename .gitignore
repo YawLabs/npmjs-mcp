@@ -1,4 +1,5 @@
 node_modules/
 dist/
 *.tsbuildinfo
-.claude
+.claude/*
+!.claude/settings.json

@@ -8,7 +8,7 @@
           {
             "type": "command",
             "shell": "bash",
-            "command": "command=\"$(jq -r '.tool_input.command // empty')\"; case \"$command\" in *\"git commit\"*) ;; *) exit 0 ;; esac; npx tsc --noEmit >&2 || exit 2",
+            "command": "command=\"$(jq -r '.tool_input.command // empty')\"; [[ \"$command\" =~ (^|[^[:alnum:]_-])git[[:space:]]+commit($|[^[:alnum:]_-]) ]] || exit 0; npx tsc --noEmit >&2 || exit 2",
             "timeout": 60,
             "statusMessage": "Type-checking before commit"
           }

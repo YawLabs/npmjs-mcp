@@ -183,21 +183,40 @@ step 6 "Create GitHub release"
 if gh release view "v${VERSION}" >/dev/null 2>&1; then
   info "GitHub release v${VERSION} already exists -- skipping"
 else
-  # Resolve the tag immediately preceding v${VERSION} via git's own ancestry
-  # walk. Earlier this used `git tag --sort=-v:refname | grep -A1 ...`, which
-  # returned a misleading neighbour tag when v${VERSION} was missing from the
-  # tag list. `git describe --tags --abbrev=0 v${VERSION}^` only succeeds when
-  # the current tag exists; if it fails we fall back to "Initial release".
-  PREV_TAG=$(git describe --tags --abbrev=0 "v${VERSION}^" 2>/dev/null || true)
-  if [ -n "$PREV_TAG" ]; then
-    CHANGELOG=$(git log --oneline "${PREV_TAG}..v${VERSION}" --no-decorate | sed 's/^[a-f0-9]* /- /')
+  # Prefer the CHANGELOG.md entry for v${VERSION} so the release page mirrors
+  # the project narrative (Fixed / Added / Changed / Documentation sections).
+  # awk's `index($0, "## [" ver "]") == 1` matches the literal header line
+  # regardless of what date separator (-- vs em-dash) follows. Capture stops
+  # when the next `## [` header appears.
+  NOTES=""
+  if [ -f CHANGELOG.md ]; then
+    NOTES=$(awk -v ver="$VERSION" '
+      index($0, "## [" ver "]") == 1 { capture=1; next }
+      capture && /^## \[/ { exit }
+      capture { print }
+    ' CHANGELOG.md)
+  fi
+
+  # Falls back to the commit-subject derivation if the entry is missing
+  # (e.g. hotfix releases that intentionally skipped the CHANGELOG) or
+  # contains only whitespace. `git describe --tags --abbrev=0 v${VERSION}^`
+  # only succeeds when the current tag exists; if it fails (first release)
+  # we land on "Initial release".
+  if [ -z "$(echo "$NOTES" | tr -d '[:space:]')" ]; then
+    PREV_TAG=$(git describe --tags --abbrev=0 "v${VERSION}^" 2>/dev/null || true)
+    if [ -n "$PREV_TAG" ]; then
+      NOTES=$(git log --oneline "${PREV_TAG}..v${VERSION}" --no-decorate | sed 's/^[a-f0-9]* /- /')
+      warn "no CHANGELOG.md entry for v${VERSION} -- falling back to commit subjects"
+    else
+      NOTES="Initial release"
+    fi
   else
-    CHANGELOG="Initial release"
+    info "release notes sourced from CHANGELOG.md"
   fi
 
   gh release create "v${VERSION}" \
     --title "v${VERSION}" \
-    --notes "$CHANGELOG"
+    --notes "$NOTES"
   info "GitHub release created"
 fi
 

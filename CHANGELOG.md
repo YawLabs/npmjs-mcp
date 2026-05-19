@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.11.10] -- 2026-05-19
+## [0.11.11] -- 2026-05-19
 
 ### Fixed
 - `versionsSatisfying(versions, "1.2.3")` now matches the exact version. `parseSingleConstraint` previously returned `null` for bare `N.N.N` strings (leaning on a fast path in `maxSatisfying`), which left `versionsSatisfying` returning `[]` and silently broke `npm_deprecate(versionRange: "1.2.3")` -- the tool reported "No versions match range '1.2.3'" even when 1.2.3 was published. Bare exact versions now compile to the same range shape as `=N.N.N`.

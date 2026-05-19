@@ -48,10 +48,7 @@ export const analysisTools = [
       }
       let auditData: Record<string, unknown[]> = {};
       if (Object.keys(auditMap).length > 0) {
-        const auditRes = await registryPost<Record<string, unknown[]>>(
-          "/-/npm/v1/security/advisories/bulk",
-          auditMap,
-        );
+        const auditRes = await registryPost<Record<string, unknown[]>>("/-/npm/v1/security/advisories/bulk", auditMap);
         if (auditRes.ok && auditRes.data) auditData = auditRes.data;
       }
 

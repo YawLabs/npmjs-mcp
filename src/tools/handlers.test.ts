@@ -1734,11 +1734,7 @@ describe("Provenance handlers", () => {
       lastRequest!.url.includes("1.0.0-beta%2Bexp.sha.5114f85"),
       `expected encoded '+' in URL, got: ${lastRequest!.url}`,
     );
-    assert.equal(
-      lastRequest!.url.includes("1.0.0-beta+exp.sha.5114f85"),
-      false,
-      "raw '+' must not appear in the URL",
-    );
+    assert.equal(lastRequest!.url.includes("1.0.0-beta+exp.sha.5114f85"), false, "raw '+' must not appear in the URL");
   });
 });
 

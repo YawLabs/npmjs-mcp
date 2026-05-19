@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.12] -- 2026-05-19
+
+### Fixed
+- `npm_compare` no longer silently reports `vulnerabilities: 0` for every compared package when the bulk `/security/advisories/bulk` POST fails. Each row now carries an `auditReliable: boolean` and reports `vulnerabilities: null` when audit didn't return — matches the signal we already surface in `npm_health`. Same class of bug as the `npm_health` audit-failure fix in 0.11.10.
+- `npm_health` `assessment` now layers `AUDIT_UNKNOWN` between `VULNERABLE` and `STALE`. Previously the headline string fell through to `ACTIVE`/`MAINTENANCE` when audit was unreliable, even though `signals.auditReliable: false` was already exposed — callers reading only `.assessment` got a confident "fine" verdict on unverified vuln data. `DEPRECATED` still takes priority over `AUDIT_UNKNOWN`.
+- `npm_dep_tree` resolve-failure path (no range match AND no `dist-tags.latest` to fall back on, added in 0.11.10) now gates the placeholder write on `failedPackages`, matching the fetch-failure path. Two parents referencing the same unresolvable dep via different ranges land exactly one failed-true entry instead of inflating `unresolvedCount`.
+
+### Tests
+- +6 cases (723 -> 729): `npm_compare` `auditReliable` true on successful audit / false with `vulnerabilities: null` on audit 5xx, `npm_health` assessment `AUDIT_UNKNOWN` on audit 5xx and on no-`latest` packages, `DEPRECATED` still wins over `AUDIT_UNKNOWN`, and `npm_dep_tree` resolve-failure dedup across two parents.
+
 ## [0.11.11] -- 2026-05-19
 
 ### Fixed

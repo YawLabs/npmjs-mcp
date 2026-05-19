@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.10] -- 2026-05-19
+
+### Fixed
+- `versionsSatisfying(versions, "1.2.3")` now matches the exact version. `parseSingleConstraint` previously returned `null` for bare `N.N.N` strings (leaning on a fast path in `maxSatisfying`), which left `versionsSatisfying` returning `[]` and silently broke `npm_deprecate(versionRange: "1.2.3")` -- the tool reported "No versions match range '1.2.3'" even when 1.2.3 was published. Bare exact versions now compile to the same range shape as `=N.N.N`.
+- `npm_dep_tree` marks a dep `failed: true` when no version satisfies the requested range AND there is no `dist-tags.latest` to fall back on. Previously the unresolved node was emitted as a fake resolved entry whose `version` field held the range string and `dependencies` was `{}`, silently inflating `totalPackages` and hiding the failure from `unresolvedCount`.
+
+### Added
+- `npm_health` `signals.auditReliable` distinguishes "audit returned zero advisories" from "audit failed to return". A transient 5xx on `/security/advisories/bulk` (or a packument with no `dist-tags.latest` to audit) used to silently downgrade the assessment from `VULNERABLE` to `ACTIVE`/`MAINTENANCE` -- callers can now read the field to tell clean from missing. The headline `assessment` string still routes through `vulnerabilityCount`; consumers that care about audit reliability should read the signal explicitly.
+
+### Changed
+- `npm_compare` collapses N per-package audit POSTs into one batched POST to `/-/npm/v1/security/advisories/bulk` keyed by every package name. Per-package failures now route through `translateError` to match the error shape used by `npm_health` and the rest of the codebase; raw error passthrough is gone.
+
+### Documentation
+- `npm_unpublish_version` description spells out the dist-tag handling asymmetry: tags pointing at the unpublished version are removed; only `latest` is auto-reassigned (to the highest remaining stable version). Other tags like `next`/`beta` are left unset and must be reassigned explicitly with `npm_dist_tag_set`.
+
+### Tests
+- 25 new cases (698 -> 723) covering: bare-exact-version match in `versionsSatisfying` (plus prerelease exclusion), `npm_compare` one-POST batched audit + per-package vuln attribution + sibling survival on packument failure + `translateError` shape + `weeklyDownloads: null` on downloads failure, `npm_health` `auditReliable` true/false branches (including the no-`latest` case), `npm_dep_tree` resolve-failure failed-true marker, `npm_provenance` `+` build-metadata version encoding, debug logging Authorization redaction, `createLimiter` active-cap + FIFO ordering, `hooks.classifyHookTarget` bare unscoped name, `npm_types` legacy `typings` fallback + "no types available" recommendation, `npm_license_check` FETCH_ERROR vs UNKNOWN, `npm_trusted_publishers` GitLab + CircleCI claim parsing, `npm_package_access` partial result when one of `/access` or `/collaborators` fails, `npm_check_auth` `ifPublishFails` hand-off structure under 2FA, and `npm_publish_preflight` maintainer-access pass/fail branches.
+
 ## [0.11.9] -- 2026-05-16
 
 ### Changed

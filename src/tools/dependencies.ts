@@ -72,9 +72,14 @@ export const dependencyTools = [
       // failure.
       const failedPackages = new Set<string>();
       const resolved = new Set<string>(); // "name@hint" keys already queued
-      // `failed: true` marks entries the packument fetch never returned for.
-      // Their `version` field holds the REQUESTED range, not a resolved version
-      // — callers must filter on `failed` before reading `version` as a real semver.
+      // `failed: true` marks entries we couldn't fully resolve. Two failure
+      // modes both land here:
+      //   1. The packument fetch never returned (404/network/etc).
+      //   2. The packument returned, but no version satisfied the requested
+      //      range AND there was no `latest` to fall back on.
+      // In both cases `version` holds the REQUESTED range string, not a real
+      // resolved version — callers must filter on `failed` before reading
+      // `version` as a semver.
       type TreeNode = { version: string; dependencies: Record<string, string>; failed?: true };
       const tree: Record<string, TreeNode> = {};
       const warnings: string[] = [];
@@ -112,14 +117,16 @@ export const dependencyTools = [
           return;
         }
 
-        // Resolve version hint to an actual version
+        // Resolve version hint to an actual version. Falls back to `latest`
+        // when the range doesn't match anything; if `latest` is also missing
+        // we leave the range string in place and let the missing-versionData
+        // branch below mark the node as failed.
         let resolvedVersion: string;
         if (pkg.versions[versionHint]) {
           resolvedVersion = versionHint;
         } else if (pkg["dist-tags"][versionHint]) {
           resolvedVersion = pkg["dist-tags"][versionHint];
         } else {
-          // Try semver range resolution against available versions
           const available = Object.keys(pkg.versions);
           const matched = maxSatisfying(available, versionHint);
           resolvedVersion = matched ?? pkg["dist-tags"]?.latest ?? versionHint;
@@ -131,7 +138,12 @@ export const dependencyTools = [
 
         const versionData = pkg.versions[resolvedVersion];
         if (!versionData) {
-          tree[resolvedKey] = { version: resolvedVersion, dependencies: {} };
+          // Reached when `resolvedVersion` is still the range string (no range
+          // match, no latest), or — pathologically — when the registry hands
+          // back a `latest`/match that's absent from `versions`. Mark failed
+          // so `unresolvedCount` and consumers don't treat this as a real
+          // resolution with zero deps.
+          tree[resolvedKey] = { version: resolvedVersion, dependencies: {}, failed: true };
           return;
         }
 

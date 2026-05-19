@@ -229,7 +229,10 @@ export const writeTools = [
       "Unpublish a specific version of a package. IRREVERSIBLE: once unpublished, the version " +
       "cannot be re-published and will be blocked for 72 hours. Only works within 72 hours of " +
       "the original publish for most packages. Requires explicit confirm: true to prevent accidents. " +
-      "Follows the npm CLI flow (mutate packument + delete tarball). For full-package unpublish use npm_unpublish_package.",
+      "Follows the npm CLI flow (mutate packument + delete tarball). For full-package unpublish use npm_unpublish_package. " +
+      "Dist-tag handling: any dist-tag that pointed at the unpublished version is removed. Only `latest` " +
+      "is auto-reassigned (to the highest remaining stable version). Other tags like `next`/`beta` are " +
+      "left unset — reassign them explicitly with npm_dist_tag_set if needed.",
     annotations: {
       title: "Unpublish version",
       readOnlyHint: false,

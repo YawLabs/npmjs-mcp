@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, afterEach, describe, it } from "node:test";
 import {
+  createLimiter,
   encPkg,
   encScope,
   encTag,
@@ -8,6 +9,7 @@ import {
   encUser,
   maxSatisfying,
   registryGet,
+  registryGetAuth,
   registryPost,
   validatePackageName,
   validateScope,
@@ -564,5 +566,104 @@ describe("NPM_REGISTRY env override", () => {
 
     await registryGet("/express");
     assert.equal(seen[0], "https://registry.example.internal/express");
+  });
+});
+
+describe("createLimiter", () => {
+  it("caps concurrent active tasks at the configured ceiling", async () => {
+    // Three tasks at limit=2: two run immediately, third must wait until one
+    // resolves. A regression that bursts past the ceiling (e.g. `active++`
+    // landing after the queue check) would have all three active at once.
+    const limit = createLimiter(2);
+    let active = 0;
+    let peak = 0;
+    let resolve1!: () => void;
+    let resolve2!: () => void;
+    let resolve3!: () => void;
+    const gate1 = new Promise<void>((r) => {
+      resolve1 = r;
+    });
+    const gate2 = new Promise<void>((r) => {
+      resolve2 = r;
+    });
+    const gate3 = new Promise<void>((r) => {
+      resolve3 = r;
+    });
+
+    const make = (gate: Promise<void>) =>
+      limit(async () => {
+        active++;
+        if (active > peak) peak = active;
+        await gate;
+        active--;
+      });
+
+    const p1 = make(gate1);
+    const p2 = make(gate2);
+    const p3 = make(gate3);
+
+    // Let any synchronous microtasks settle before measuring peak.
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(peak, 2, "no more than 2 tasks may be active at once");
+
+    resolve1();
+    await p1;
+    // Once p1 frees a slot, p3 should start and bump active back to 2.
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(active, 2);
+    resolve2();
+    resolve3();
+    await Promise.all([p2, p3]);
+    assert.equal(peak, 2);
+  });
+
+  it("preserves FIFO order across queued tasks", async () => {
+    // queue.shift() drives ordering; a regression to queue.pop() would invert it.
+    const limit = createLimiter(1);
+    const order: number[] = [];
+    const tasks = [1, 2, 3, 4].map((i) =>
+      limit(async () => {
+        order.push(i);
+      }),
+    );
+    await Promise.all(tasks);
+    assert.deepEqual(order, [1, 2, 3, 4]);
+  });
+});
+
+describe("debug logging redaction", () => {
+  it("does not include the Authorization header value in DEBUG output", async () => {
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    process.env.DEBUG = "npmjs-mcp";
+    process.env.NPM_TOKEN = "sup3r-s3cret-bearer-do-not-leak";
+    const originalConsoleError = console.error;
+    const errors: string[] = [];
+    console.error = (msg: string) => {
+      errors.push(String(msg));
+    };
+
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      await registryGetAuth("/whoami");
+      const joined = errors.join("\n");
+      assert.ok(joined.length > 0, "DEBUG should have produced at least one stderr line");
+      assert.equal(
+        joined.includes("sup3r-s3cret-bearer-do-not-leak"),
+        false,
+        `Bearer token leaked into debug output: ${joined}`,
+      );
+      assert.equal(joined.includes("Authorization"), false, "Authorization header name should not appear either");
+    } finally {
+      console.error = originalConsoleError;
+      delete process.env.DEBUG;
+      delete process.env.NPM_TOKEN;
+      delete process.env.NPM_RETRY_BACKOFF_MS;
+    }
   });
 });

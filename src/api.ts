@@ -426,8 +426,11 @@ function parseSingleConstraint(r: string): SemverRange | null {
     if (patch === null) {
       return { min: [major, minor, 0], max: [major, minor + 1, 0] };
     }
-    // Exact version — handled by the includes() check in maxSatisfying
-    return null;
+    // Exact version — same shape as `=N.N.N`. Returning a range here (rather
+    // than null + leaning on a fast path in maxSatisfying) lets versionsSatisfying
+    // handle bare exact versions too. Without this, npm_deprecate with
+    // versionRange "1.2.3" silently matched zero versions.
+    return { min: [major, minor, patch], max: [major, minor, patch + 1] };
   }
 
   return null;

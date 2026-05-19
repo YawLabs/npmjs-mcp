@@ -173,6 +173,22 @@ describe("versionsSatisfying", () => {
     const out = versionsSatisfying(["0.1.0", "0.2.0", "1.0.0"], "<1.0.0");
     assert.deepEqual(out.sort(), ["0.1.0", "0.2.0"]);
   });
+
+  it("matches a bare exact version like '1.2.3' (the shape npm_deprecate hands us)", () => {
+    // Regression guard: parseSingleConstraint used to return null for bare
+    // N.N.N (treating it as the x-range branch's "handled elsewhere" case),
+    // which left versionsSatisfying returning [] and silently breaking
+    // npm_deprecate(versionRange: "1.2.3").
+    const out = versionsSatisfying(["1.2.3", "1.2.4"], "1.2.3");
+    assert.deepEqual(out, ["1.2.3"]);
+  });
+
+  it("a bare exact version does not let prereleases of the same base leak through", () => {
+    // No prerelease tag in the range source -> no anchor -> the standard
+    // prerelease-exclusion rule still applies.
+    const out = versionsSatisfying(["1.2.3-beta.1", "1.2.3"], "1.2.3");
+    assert.deepEqual(out, ["1.2.3"]);
+  });
 });
 
 // ─── npm_deprecate ───

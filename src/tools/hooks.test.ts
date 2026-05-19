@@ -110,6 +110,16 @@ describe("npm_hook_add", () => {
     });
   });
 
+  it("classifies an unscoped bare name as package type", async () => {
+    // The default branch — covers the most common real-world hook target.
+    mockFetch(200, { id: "h-bare" });
+    const tool = findTool("npm_hook_add");
+    await tool.handler({ target: "express", endpoint: "https://example.com/h", secret: "s" });
+    const body = lastRequest!.body as { type: string; name: string };
+    assert.equal(body.type, "package");
+    assert.equal(body.name, "express");
+  });
+
   it("classifies @scope (no slash) as scope type", async () => {
     mockFetch(200, { id: "h2" });
     const tool = findTool("npm_hook_add");

@@ -26,52 +26,68 @@ export const analysisTools = [
       packages: z.array(z.string()).min(2).max(5).describe("Package names to compare"),
     }),
     handler: async (input: { packages: string[] }) => {
-      const results = await Promise.all(
+      // Step 1: fetch packument + downloads per package in parallel.
+      const partials = await Promise.all(
         input.packages.map(async (name) => {
-          // Fetch packument and downloads in parallel first
           const [pkgRes, dlRes] = await Promise.all([
             registryGet<Packument>(`/${encPkg(name)}`),
             downloadsGet<DownloadPoint>(`/downloads/point/last-week/${encPkg(name)}`),
           ]);
-
-          if (!pkgRes.ok) {
-            return { name, error: pkgRes.error };
-          }
-
-          const pkg = pkgRes.data!;
-          const latest = pkg["dist-tags"]?.latest;
-          const latestVersion = latest ? pkg.versions[latest] : undefined;
-          const versionKeys = Object.keys(pkg.versions);
-
-          // Audit with the real resolved version (not "latest" dist-tag)
-          let vulnerabilities = 0;
-          if (latest) {
-            const auditRes = await registryPost<Record<string, unknown[]>>("/-/npm/v1/security/advisories/bulk", {
-              [name]: [latest],
-            });
-            if (auditRes.ok && auditRes.data?.[name]) {
-              vulnerabilities = (auditRes.data[name] as unknown[]).length;
-            }
-          }
-
-          return {
-            name,
-            description: pkg.description,
-            latest,
-            license: pkg.license ?? latestVersion?.license,
-            maintainers: pkg.maintainers?.map((m) => m.name),
-            weeklyDownloads: dlRes.ok ? dlRes.data!.downloads : null,
-            versionCount: versionKeys.length,
-            created: pkg.time.created,
-            lastPublish: latest ? pkg.time[latest] : undefined,
-            deprecated: latestVersion?.deprecated ?? false,
-            hasReadme: !!(pkg.readme && pkg.readme.length > 0),
-            repository: pkg.repository,
-            homepage: pkg.homepage,
-            vulnerabilities,
-          };
+          return { name, pkgRes, dlRes };
         }),
       );
+
+      // Step 2: one batched audit POST for every resolvable package — replaces
+      // N per-package POSTs to the same endpoint. The advisory map is keyed by
+      // name, so the registry returns per-package advisory lists in one round-trip.
+      const auditMap: Record<string, string[]> = {};
+      for (const { name, pkgRes } of partials) {
+        if (!pkgRes.ok) continue;
+        const latest = pkgRes.data!["dist-tags"]?.latest;
+        if (latest) auditMap[name] = [latest];
+      }
+      let auditData: Record<string, unknown[]> = {};
+      if (Object.keys(auditMap).length > 0) {
+        const auditRes = await registryPost<Record<string, unknown[]>>(
+          "/-/npm/v1/security/advisories/bulk",
+          auditMap,
+        );
+        if (auditRes.ok && auditRes.data) auditData = auditRes.data;
+      }
+
+      // Step 3: assemble per-package rows. Per-package failures route through
+      // translateError so the error shape matches the rest of the codebase
+      // (raw passthrough used to diverge from npm_health).
+      const results = partials.map(({ name, pkgRes, dlRes }) => {
+        if (!pkgRes.ok) {
+          const translated = translateError(pkgRes, { pkg: name, op: "compare" });
+          return { name, error: translated.error };
+        }
+
+        const pkg = pkgRes.data!;
+        const latest = pkg["dist-tags"]?.latest;
+        const latestVersion = latest ? pkg.versions[latest] : undefined;
+        const versionKeys = Object.keys(pkg.versions);
+        const advisories = auditData[name];
+        const vulnerabilities = Array.isArray(advisories) ? advisories.length : 0;
+
+        return {
+          name,
+          description: pkg.description,
+          latest,
+          license: pkg.license ?? latestVersion?.license,
+          maintainers: pkg.maintainers?.map((m) => m.name),
+          weeklyDownloads: dlRes.ok ? dlRes.data!.downloads : null,
+          versionCount: versionKeys.length,
+          created: pkg.time.created,
+          lastPublish: latest ? pkg.time[latest] : undefined,
+          deprecated: latestVersion?.deprecated ?? false,
+          hasReadme: !!(pkg.readme && pkg.readme.length > 0),
+          repository: pkg.repository,
+          homepage: pkg.homepage,
+          vulnerabilities,
+        };
+      });
 
       return { ok: true, status: 200, data: { comparison: results } } as ApiResponse;
     },
@@ -104,8 +120,12 @@ export const analysisTools = [
       const latestVersion = latest ? pkg.versions[latest] : undefined;
       const versionKeys = Object.keys(pkg.versions);
 
-      // Security check — audit the latest version
+      // Security check — audit the latest version. `auditReliable` distinguishes
+      // "audit returned zero advisories" from "audit failed to return". Without
+      // it, a transient 5xx silently downgrades the assessment from VULNERABLE
+      // to ACTIVE/MAINTENANCE — callers couldn't tell a clean run from a missing run.
       let vulnerabilityCount: number | null = null;
+      let auditReliable = true;
       if (latest) {
         const auditRes = await registryPost<Record<string, unknown[]>>("/-/npm/v1/security/advisories/bulk", {
           [input.name]: [latest],
@@ -113,7 +133,12 @@ export const analysisTools = [
         if (auditRes.ok) {
           const advisories = auditRes.data?.[input.name];
           vulnerabilityCount = Array.isArray(advisories) ? advisories.length : 0;
+        } else {
+          auditReliable = false;
         }
+      } else {
+        // No `latest` to audit. Not an audit failure per se — just nothing to check.
+        auditReliable = false;
       }
 
       // Calculate release cadence from the time object
@@ -159,6 +184,7 @@ export const analysisTools = [
             daysSinceLastPublish,
             avgDaysBetweenReleases,
             vulnerabilityCount,
+            auditReliable,
             hasLicense,
             hasReadme,
             hasRepo,

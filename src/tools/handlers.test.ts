@@ -383,6 +383,50 @@ describe("Dependency handlers", () => {
     assert.ok(result.data.allowed.includes("GPL-3.0"));
   });
 
+  it("npm_license_check marks a dep FETCH_ERROR when the abbreviated packument call fails", async () => {
+    // Distinguishes "registry didn't respond" from "license missing". A regression
+    // that collapsed both to UNKNOWN would silently hide network blips during
+    // license resolution.
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    try {
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        const method = init?.method ?? "GET";
+        const headers: Record<string, string> = {};
+        if (init?.headers) {
+          for (const [k, v] of Object.entries(init.headers as Record<string, string>)) {
+            headers[k] = v;
+          }
+        }
+        lastRequest = { url, method, headers, body: undefined };
+        requests.push(lastRequest);
+        if (url.endsWith("/express/latest")) {
+          return new Response(
+            JSON.stringify({
+              name: "express",
+              version: "4.18.2",
+              dependencies: { flakydep: "1.0.0" },
+              license: "MIT",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        // flakydep abbreviated packument: 503 — should surface as FETCH_ERROR.
+        return new Response("unavailable", { status: 503 });
+      }) as typeof fetch;
+      const tool = findTool(dependencyTools, "npm_license_check");
+      const result = (await tool.handler({ name: "express" })) as {
+        data: { packages: Array<{ name: string; license: string }>; flagged: number };
+      };
+      const flaky = result.data.packages.find((p) => p.name === "flakydep");
+      assert.ok(flaky, "flakydep row should be present");
+      assert.equal(flaky!.license, "FETCH_ERROR");
+      assert.ok(result.data.flagged >= 1, "FETCH_ERROR is not in the default allowed set, so flagged should fire");
+    } finally {
+      delete process.env.NPM_RETRY_BACKOFF_MS;
+    }
+  });
+
   it("npm_license_check matches SPDX ids case-insensitively", async () => {
     // SPDX identifiers are case-insensitive per spec; a package declaring
     // `license: "mit"` (lowercase) must not be flagged when the allow-list
@@ -723,6 +767,59 @@ describe("Dependency handlers", () => {
     assert.equal(sharedFetches, 1, "shared packument should be fetched exactly once across both parents");
     assert.equal(result.data.totalPackages, 4); // root, a, b, shared
   });
+
+  it("npm_dep_tree marks a dep failed when no version satisfies the range AND there is no latest fallback", async () => {
+    // root depends on weird@^9.0.0; weird's packument lists only 1.0.0 and has
+    // no dist-tags.latest. Both range-resolution and the latest fallback miss,
+    // so the dep must land as a failed-true node — not as a fake resolved entry
+    // whose `version` is the range string and `dependencies` is {}.
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith("/root")) {
+        return new Response(
+          JSON.stringify({
+            name: "root",
+            "dist-tags": { latest: "1.0.0" },
+            versions: {
+              "1.0.0": {
+                name: "root",
+                version: "1.0.0",
+                dependencies: { weird: "^9.0.0" },
+              },
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/weird")) {
+        return new Response(
+          JSON.stringify({
+            name: "weird",
+            "dist-tags": {},
+            versions: { "1.0.0": { name: "weird", version: "1.0.0", dependencies: {} } },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+
+    const tool = findTool(dependencyTools, "npm_dep_tree");
+    const result = (await tool.handler({ name: "root", depth: 2 })) as {
+      data: {
+        totalPackages: number;
+        unresolvedCount?: number;
+        tree: Record<string, { version: string; dependencies: Record<string, string>; failed?: true }>;
+      };
+    };
+    const failedEntries = Object.entries(result.data.tree).filter(([, v]) => v.failed === true);
+    assert.equal(failedEntries.length, 1, "weird should appear as a failed-true placeholder");
+    assert.match(failedEntries[0][0], /^weird@/);
+    // resolvedCount = 1 (root only); unresolvedCount = 1 (weird) so callers don't
+    // have to inspect the tree to know about the failure.
+    assert.equal(result.data.totalPackages, 1);
+    assert.equal(result.data.unresolvedCount, 1);
+  });
 });
 
 // ─── Downloads ───
@@ -832,8 +929,180 @@ describe("Analysis handlers", () => {
     mockFetch(200, packument);
     const tool = findTool(analysisTools, "npm_compare");
     await tool.handler({ packages: ["express", "koa"] });
-    // Should have made requests for both packages (registry + downloads + audit each)
+    // 2 packuments + 2 downloads + 1 batched audit = 5 (was N*3 before batching).
     assert.ok(requests.length >= 4);
+  });
+
+  it("npm_compare batches the audit into one POST regardless of package count", async () => {
+    mockFetchMulti({
+      "/-/npm/v1/security/advisories/bulk": { express: [], koa: [] },
+      "/downloads/point/last-week": { downloads: 1000 },
+      "/express": {
+        name: "express",
+        "dist-tags": { latest: "4.0.0" },
+        versions: { "4.0.0": { version: "4.0.0", license: "MIT" } },
+        time: { created: "2020-01-01", "4.0.0": "2024-01-01" },
+        maintainers: [],
+      },
+      "/koa": {
+        name: "koa",
+        "dist-tags": { latest: "2.0.0" },
+        versions: { "2.0.0": { version: "2.0.0", license: "MIT" } },
+        time: { created: "2018-01-01", "2.0.0": "2024-01-01" },
+        maintainers: [],
+      },
+    });
+    const tool = findTool(analysisTools, "npm_compare");
+    await tool.handler({ packages: ["express", "koa"] });
+    const bulkPosts = requests.filter(
+      (r) => r.method === "POST" && r.url.includes("/-/npm/v1/security/advisories/bulk"),
+    );
+    assert.equal(bulkPosts.length, 1, "exactly one batched audit POST regardless of N");
+    const body = bulkPosts[0].body as Record<string, string[]>;
+    assert.deepEqual(Object.keys(body).sort(), ["express", "koa"]);
+    assert.deepEqual(body.express, ["4.0.0"]);
+    assert.deepEqual(body.koa, ["2.0.0"]);
+  });
+
+  it("npm_compare attributes per-package vulnerability counts from the bulk audit response", async () => {
+    mockFetchMulti({
+      "/-/npm/v1/security/advisories/bulk": {
+        express: [{ severity: "high" }, { severity: "low" }],
+        koa: [],
+      },
+      "/downloads/point/last-week": { downloads: 1000 },
+      "/express": {
+        name: "express",
+        "dist-tags": { latest: "4.0.0" },
+        versions: { "4.0.0": { version: "4.0.0", license: "MIT" } },
+        time: { created: "2020-01-01", "4.0.0": "2024-01-01" },
+        maintainers: [],
+      },
+      "/koa": {
+        name: "koa",
+        "dist-tags": { latest: "2.0.0" },
+        versions: { "2.0.0": { version: "2.0.0", license: "MIT" } },
+        time: { created: "2018-01-01", "2.0.0": "2024-01-01" },
+        maintainers: [],
+      },
+    });
+    const tool = findTool(analysisTools, "npm_compare");
+    const result = (await tool.handler({ packages: ["express", "koa"] })) as {
+      data: { comparison: Array<{ name: string; vulnerabilities?: number; error?: string }> };
+    };
+    const byName = Object.fromEntries(result.data.comparison.map((r) => [r.name, r]));
+    assert.equal(byName.express.vulnerabilities, 2);
+    assert.equal(byName.koa.vulnerabilities, 0);
+  });
+
+  it("npm_compare keeps auditing siblings when one package's packument fails", async () => {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const method = init?.method ?? "GET";
+      const headers: Record<string, string> = {};
+      let body: unknown;
+      if (init?.body) {
+        const raw = init.body.toString();
+        try {
+          body = JSON.parse(raw);
+        } catch {
+          body = raw;
+        }
+      }
+      lastRequest = { url, method, headers, body };
+      requests.push(lastRequest);
+      if (url.endsWith("/express")) return new Response("Not Found", { status: 404 });
+      if (url.endsWith("/koa")) {
+        return new Response(
+          JSON.stringify({
+            name: "koa",
+            "dist-tags": { latest: "2.0.0" },
+            versions: { "2.0.0": { version: "2.0.0", license: "MIT" } },
+            time: { created: "2018-01-01", "2.0.0": "2024-01-01" },
+            maintainers: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.includes("/-/npm/v1/security/advisories/bulk")) {
+        return new Response(JSON.stringify({ koa: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+
+    const tool = findTool(analysisTools, "npm_compare");
+    const result = (await tool.handler({ packages: ["express", "koa"] })) as {
+      data: { comparison: Array<{ name: string; error?: string; vulnerabilities?: number }> };
+    };
+    const bulkPosts = requests.filter(
+      (r) => r.method === "POST" && r.url.includes("/-/npm/v1/security/advisories/bulk"),
+    );
+    assert.equal(bulkPosts.length, 1, "audit POST still fires for the surviving package");
+    assert.deepEqual(Object.keys(bulkPosts[0].body as object), ["koa"]);
+    const byName = Object.fromEntries(result.data.comparison.map((r) => [r.name, r]));
+    assert.ok(byName.express.error, "failed package surfaces with an error entry");
+    assert.equal(byName.koa.vulnerabilities, 0);
+  });
+
+  it("npm_compare translates a 404 into a 'Not found' message rather than passing it through raw", async () => {
+    mockFetch(404, "Not Found");
+    const tool = findTool(analysisTools, "npm_compare");
+    const result = (await tool.handler({ packages: ["nonexistent-pkg-xyz", "also-nonexistent"] })) as {
+      data: { comparison: Array<{ name: string; error?: string }> };
+    };
+    for (const row of result.data.comparison) {
+      assert.ok(row.error, `${row.name} should have an error entry`);
+      assert.match(row.error!, /Not found/);
+    }
+  });
+
+  it("npm_compare reports weeklyDownloads: null when the downloads endpoint fails for a package", async () => {
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    try {
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        const method = init?.method ?? "GET";
+        const headers: Record<string, string> = {};
+        let body: unknown;
+        if (init?.body) {
+          const raw = init.body.toString();
+          try {
+            body = JSON.parse(raw);
+          } catch {
+            body = raw;
+          }
+        }
+        lastRequest = { url, method, headers, body };
+        requests.push(lastRequest);
+        if (url.includes("/downloads/")) return new Response("unavailable", { status: 503 });
+        if (url.includes("/-/npm/v1/security/advisories/bulk")) {
+          return new Response(JSON.stringify({ express: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            name: "express",
+            "dist-tags": { latest: "4.0.0" },
+            versions: { "4.0.0": { version: "4.0.0", license: "MIT" } },
+            time: { created: "2020-01-01", "4.0.0": "2024-01-01" },
+            maintainers: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch;
+      const tool = findTool(analysisTools, "npm_compare");
+      const result = (await tool.handler({ packages: ["express"] })) as {
+        data: { comparison: Array<{ name: string; weeklyDownloads: number | null }> };
+      };
+      assert.equal(result.data.comparison[0].weeklyDownloads, null);
+    } finally {
+      delete process.env.NPM_RETRY_BACKOFF_MS;
+    }
   });
 
   it("npm_health fetches package + downloads", async () => {
@@ -896,6 +1165,102 @@ describe("Analysis handlers", () => {
     };
     assert.equal(result.data.signals.vulnerabilityCount, 0);
     assert.equal(result.data.assessment, "ACTIVE");
+  });
+
+  it("npm_health reports auditReliable: true on a successful zero-advisory audit", async () => {
+    // Distinguishes "audit returned zero advisories" from "audit failed to return".
+    // Without the field, a transient 5xx silently downgrades the assessment from
+    // VULNERABLE to ACTIVE/MAINTENANCE — callers couldn't tell clean from missing.
+    const recent = new Date(Date.now() - 7 * 86_400_000).toISOString();
+    mockFetchMulti({
+      "/-/npm/v1/security/advisories/bulk": { express: [] },
+      "/downloads/point/last-week": { downloads: 1000 },
+      "/downloads/point/last-month": { downloads: 4000 },
+      "/express": {
+        name: "express",
+        "dist-tags": { latest: "4.18.2" },
+        versions: { "4.18.2": { version: "4.18.2", license: "MIT" } },
+        time: { created: "2010-01-01", modified: recent, "4.18.2": recent },
+        maintainers: [{ name: "dougwilson" }],
+      },
+    });
+    const tool = findTool(analysisTools, "npm_health");
+    const result = (await tool.handler({ name: "express" })) as {
+      data: { signals: { auditReliable: boolean; vulnerabilityCount: number | null } };
+    };
+    assert.equal(result.data.signals.auditReliable, true);
+    assert.equal(result.data.signals.vulnerabilityCount, 0);
+  });
+
+  it("npm_health reports auditReliable: false when the audit endpoint 5xx's", async () => {
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    try {
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        const method = init?.method ?? "GET";
+        const headers: Record<string, string> = {};
+        let body: unknown;
+        if (init?.body) {
+          const raw = init.body.toString();
+          try {
+            body = JSON.parse(raw);
+          } catch {
+            body = raw;
+          }
+        }
+        lastRequest = { url, method, headers, body };
+        requests.push(lastRequest);
+        if (url.includes("/-/npm/v1/security/advisories/bulk")) {
+          return new Response("unavailable", { status: 503 });
+        }
+        if (url.includes("/downloads/")) {
+          return new Response(JSON.stringify({ downloads: 1000 }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            name: "express",
+            "dist-tags": { latest: "4.18.2" },
+            versions: { "4.18.2": { version: "4.18.2", license: "MIT" } },
+            time: { created: "2010-01-01", "4.18.2": "2024-01-01" },
+            maintainers: [{ name: "dougwilson" }],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch;
+      const tool = findTool(analysisTools, "npm_health");
+      const result = (await tool.handler({ name: "express" })) as {
+        data: { signals: { auditReliable: boolean; vulnerabilityCount: number | null } };
+      };
+      assert.equal(result.data.signals.auditReliable, false);
+      assert.equal(result.data.signals.vulnerabilityCount, null);
+    } finally {
+      delete process.env.NPM_RETRY_BACKOFF_MS;
+    }
+  });
+
+  it("npm_health reports auditReliable: false when the packument has no dist-tags.latest to audit", async () => {
+    // Empty/uninitialized package — no version to audit means the audit signal
+    // is absent, not zero. The field should make that explicit.
+    mockFetchMulti({
+      "/downloads/point/last-week": { downloads: 0 },
+      "/downloads/point/last-month": { downloads: 0 },
+      "/ghost": {
+        name: "ghost",
+        "dist-tags": {},
+        versions: {},
+        time: { created: "2010-01-01" },
+        maintainers: [],
+      },
+    });
+    const tool = findTool(analysisTools, "npm_health");
+    const result = (await tool.handler({ name: "ghost" })) as {
+      data: { signals: { auditReliable: boolean; vulnerabilityCount: number | null } };
+    };
+    assert.equal(result.data.signals.auditReliable, false);
+    assert.equal(result.data.signals.vulnerabilityCount, null);
   });
 
   it("npm_maintainers returns maintainer list", async () => {
@@ -1171,6 +1536,50 @@ describe("Access handlers", () => {
     assert.equal(result.data.isScoped, true);
     assert.equal(result.data.scope, "@yawlabs");
   });
+
+  it("npm_package_access returns partial result when /access fails but /collaborators succeeds", async () => {
+    // Two parallel fetches; if one succeeds and the other doesn't, the handler
+    // should populate what it could read instead of erroring out entirely.
+    // Real-world: tokens with mixed scopes that can see collaborators but not
+    // the access settings (or vice versa).
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    try {
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        const method = init?.method ?? "GET";
+        const headers: Record<string, string> = {};
+        if (init?.headers) {
+          for (const [k, v] of Object.entries(init.headers as Record<string, string>)) {
+            headers[k] = v;
+          }
+        }
+        lastRequest = { url, method, headers, body: undefined };
+        requests.push(lastRequest);
+        if (url.endsWith("/access")) return new Response("forbidden", { status: 403 });
+        if (url.endsWith("/collaborators")) {
+          return new Response(JSON.stringify({ alice: "read-write" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+      }) as typeof fetch;
+      const tool = findTool(accessTools, "npm_package_access");
+      const result = (await tool.handler({ name: "@yawlabs/npmjs-mcp" })) as {
+        ok: boolean;
+        data: {
+          collaborators?: Array<{ username: string; permissions: string }>;
+          access?: unknown;
+        };
+      };
+      assert.equal(result.ok, true);
+      assert.ok(result.data.collaborators, "collaborators must be populated when its fetch succeeded");
+      assert.equal(result.data.collaborators![0].username, "alice");
+      assert.equal(result.data.access, undefined, "access must be omitted when its fetch failed");
+    } finally {
+      delete process.env.NPM_RETRY_BACKOFF_MS;
+    }
+  });
 });
 
 // ─── Organizations ───
@@ -1312,6 +1721,25 @@ describe("Provenance handlers", () => {
     assert.equal(result.data.hasPublishAttestation, true);
     assert.equal(result.data.attestationCount, 2);
   });
+
+  it("npm_provenance URL-encodes versions containing '+' build metadata", async () => {
+    // SemVer build-metadata versions like 1.0.0-beta+exp.sha.5114f85 contain '+'
+    // which URL-decoders treat as space. Without explicit encodeURIComponent on
+    // the version arg, the registry sees `1.0.0-beta exp.sha.5114f85` and 404s
+    // silently. This guards the encoding.
+    mockFetch(200, { attestations: [] });
+    const tool = findTool(provenanceTools, "npm_provenance");
+    await tool.handler({ name: "express", version: "1.0.0-beta+exp.sha.5114f85" });
+    assert.ok(
+      lastRequest!.url.includes("1.0.0-beta%2Bexp.sha.5114f85"),
+      `expected encoded '+' in URL, got: ${lastRequest!.url}`,
+    );
+    assert.equal(
+      lastRequest!.url.includes("1.0.0-beta+exp.sha.5114f85"),
+      false,
+      "raw '+' must not appear in the URL",
+    );
+  });
 });
 
 // ─── User Packages ───
@@ -1395,6 +1823,69 @@ describe("Types handler", () => {
     };
     assert.equal(result.data.builtinTypes, true);
   });
+
+  it("npm_types falls back to the legacy 'typings' field when 'types' is absent", async () => {
+    // Many pre-2020 packages used `typings` instead of `types`. The v.types ||
+    // v.typings expression covers both — without this, an older package would
+    // mis-report "no built-in types" and we'd push users to @types/* that
+    // doesn't exist.
+    mockFetchMulti({
+      "/oldpkg/latest": {
+        name: "oldpkg",
+        version: "1.0.0",
+        typings: "./legacy.d.ts",
+        dist: { shasum: "abc", tarball: "t" },
+      },
+      // @types/oldpkg: 404 — irrelevant because built-in wins anyway.
+      "/@types%2Foldpkg": {},
+    });
+    const tool = findTool(packageTools, "npm_types");
+    const result = (await tool.handler({ name: "oldpkg" })) as {
+      data: { builtinTypes: boolean; typesEntry?: string };
+    };
+    assert.equal(result.data.builtinTypes, true);
+    assert.equal(result.data.typesEntry, "./legacy.d.ts");
+  });
+
+  it("npm_types recommends nothing when neither built-in nor @types/* is available", async () => {
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    try {
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        const method = init?.method ?? "GET";
+        const headers: Record<string, string> = {};
+        if (init?.headers) {
+          for (const [k, v] of Object.entries(init.headers as Record<string, string>)) {
+            headers[k] = v;
+          }
+        }
+        lastRequest = { url, method, headers, body: undefined };
+        requests.push(lastRequest);
+        if (url.endsWith("/no-types-pkg/latest")) {
+          return new Response(
+            JSON.stringify({
+              name: "no-types-pkg",
+              version: "1.0.0",
+              dist: { shasum: "abc", tarball: "t" },
+              // No types, no typings.
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        // @types/no-types-pkg 404
+        return new Response("Not Found", { status: 404 });
+      }) as typeof fetch;
+      const tool = findTool(packageTools, "npm_types");
+      const result = (await tool.handler({ name: "no-types-pkg" })) as {
+        data: { builtinTypes: boolean; typesPackage: unknown; recommendation: string };
+      };
+      assert.equal(result.data.builtinTypes, false);
+      assert.equal(result.data.typesPackage, null);
+      assert.match(result.data.recommendation, /No TypeScript types available/);
+    } finally {
+      delete process.env.NPM_RETRY_BACKOFF_MS;
+    }
+  });
 });
 
 // ─── Trusted Publishers ───
@@ -1431,6 +1922,57 @@ describe("Trust handler", () => {
     assert.equal(result.data.trustedPublishers[0].provider, "github");
     assert.equal(result.data.trustedPublishers[0].repository, "expressjs/express");
     assert.equal(result.data.trustedPublishers[0].workflowFile, "release.yml");
+  });
+
+  it("npm_trusted_publishers parses GitLab trust config", async () => {
+    mockFetch(200, [
+      {
+        id: "tp-2",
+        type: "gitlab",
+        claims: {
+          project_path: "group/project",
+          ci_config_ref_uri: { file: ".gitlab-ci.yml" },
+          environment: "staging",
+        },
+      },
+    ]);
+    const tool = findTool(trustTools, "npm_trusted_publishers");
+    const result = (await tool.handler({ name: "example" })) as {
+      data: {
+        trustedPublishers: Array<{
+          provider: string;
+          project?: string;
+          configFile?: string;
+          environment?: string;
+        }>;
+      };
+    };
+    const tp = result.data.trustedPublishers[0];
+    assert.equal(tp.provider, "gitlab");
+    assert.equal(tp.project, "group/project");
+    assert.equal(tp.configFile, ".gitlab-ci.yml");
+    assert.equal(tp.environment, "staging");
+  });
+
+  it("npm_trusted_publishers parses CircleCI trust config", async () => {
+    mockFetch(200, [
+      {
+        id: "tp-3",
+        type: "circleci",
+        claims: {
+          project_id: "abc-123",
+          context_ids: ["ctx-a", "ctx-b"],
+        },
+      },
+    ]);
+    const tool = findTool(trustTools, "npm_trusted_publishers");
+    const result = (await tool.handler({ name: "example" })) as {
+      data: { trustedPublishers: Array<{ provider: string; project?: string; context?: string[] }> };
+    };
+    const tp = result.data.trustedPublishers[0];
+    assert.equal(tp.provider, "circleci");
+    assert.equal(tp.project, "abc-123");
+    assert.deepEqual(tp.context, ["ctx-a", "ctx-b"]);
   });
 });
 
@@ -1517,6 +2059,92 @@ describe("Workflow handlers", () => {
     } finally {
       delete process.env.NPM_RETRY_BACKOFF_MS;
     }
+  });
+
+  it("npm_check_auth populates the ifPublishFails hand-off structure when 2FA is enabled", async () => {
+    // Agents key off this exact shape to surface a "human, run this in your terminal"
+    // action. The structure is unreachable in existing tests (all use tfa: null),
+    // so a field rename would silently break the UX path.
+    mockFetchMulti({
+      "/-/whoami": { username: "alice" },
+      "/-/npm/v1/user": { name: "alice", tfa: { mode: "auth-and-writes", pending: false } },
+      "/-/npm/v1/tokens": {
+        total: 1,
+        objects: [{ token: "npm_***", key: "k1", readonly: false, cidr_whitelist: [], created: "", updated: "" }],
+      },
+    });
+    const tool = findTool(workflowTools, "npm_check_auth");
+    const result = (await tool.handler({})) as {
+      data: {
+        twoFactorAuth: string;
+        canPublishHeadless: boolean | null;
+        ifPublishFails?: {
+          errorType: string;
+          humanAction: { label: string; command: string; context: string };
+          permanentFix: { label: string; url: string; instructions: string };
+        };
+      };
+    };
+    assert.equal(result.data.twoFactorAuth, "auth-and-writes");
+    assert.equal(result.data.canPublishHeadless, null);
+    assert.ok(result.data.ifPublishFails, "ifPublishFails should be present when 2FA is on");
+    assert.equal(result.data.ifPublishFails!.errorType, "2FA_REQUIRED");
+    assert.match(result.data.ifPublishFails!.humanAction.command, /npm publish/);
+    assert.match(result.data.ifPublishFails!.humanAction.command, /--auth-type=web/);
+    assert.ok(result.data.ifPublishFails!.permanentFix.url);
+    assert.match(result.data.ifPublishFails!.permanentFix.instructions, /Granular Access Token/);
+  });
+
+  it("npm_publish_preflight reports maintainer access PASS when the authenticated user is a maintainer", async () => {
+    // Most common real-world success case for an existing package.
+    mockFetchMulti({
+      "/-/whoami": { username: "alice" },
+      "/-/npm/v1/user": { name: "alice", tfa: null },
+      "/-/npm/v1/tokens": { total: 0, objects: [] },
+      "/@yawlabs%2Ftest": {
+        name: "@yawlabs/test",
+        "dist-tags": { latest: "1.0.0" },
+        versions: { "1.0.0": { version: "1.0.0" } },
+        maintainers: [{ name: "alice" }, { name: "bob" }],
+        time: { created: "2024-01-01" },
+      },
+    });
+    const tool = findTool(workflowTools, "npm_publish_preflight");
+    const result = (await tool.handler({ name: "@yawlabs/test" })) as {
+      data: { checks: Array<{ check: string; status: string; detail: string }> };
+    };
+    const maintainerCheck = result.data.checks.find((c) => c.check === "Maintainer access");
+    assert.ok(maintainerCheck, "expected a Maintainer access check entry");
+    assert.equal(maintainerCheck!.status, "pass");
+    assert.match(maintainerCheck!.detail, /alice/);
+  });
+
+  it("npm_publish_preflight reports maintainer access FAIL when the authenticated user is not a maintainer", async () => {
+    // The other half of the existing-package case — the user has a valid token
+    // but isn't on the package. A regression in the maintainers? .map ? . includes
+    // chain would silently mark them as a maintainer.
+    mockFetchMulti({
+      "/-/whoami": { username: "outsider" },
+      "/-/npm/v1/user": { name: "outsider", tfa: null },
+      "/-/npm/v1/tokens": { total: 0, objects: [] },
+      "/@yawlabs%2Ftest": {
+        name: "@yawlabs/test",
+        "dist-tags": { latest: "1.0.0" },
+        versions: { "1.0.0": { version: "1.0.0" } },
+        maintainers: [{ name: "alice" }, { name: "bob" }],
+        time: { created: "2024-01-01" },
+      },
+    });
+    const tool = findTool(workflowTools, "npm_publish_preflight");
+    const result = (await tool.handler({ name: "@yawlabs/test" })) as {
+      data: { failCount: number; checks: Array<{ check: string; status: string; detail: string }> };
+    };
+    const maintainerCheck = result.data.checks.find((c) => c.check === "Maintainer access");
+    assert.ok(maintainerCheck);
+    assert.equal(maintainerCheck!.status, "fail");
+    assert.match(maintainerCheck!.detail, /alice/);
+    assert.match(maintainerCheck!.detail, /bob/);
+    assert.ok(result.data.failCount >= 1);
   });
 });
 

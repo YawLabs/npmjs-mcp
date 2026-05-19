@@ -142,8 +142,14 @@ export const dependencyTools = [
           // match, no latest), or — pathologically — when the registry hands
           // back a `latest`/match that's absent from `versions`. Mark failed
           // so `unresolvedCount` and consumers don't treat this as a real
-          // resolution with zero deps.
-          tree[resolvedKey] = { version: resolvedVersion, dependencies: {}, failed: true };
+          // resolution with zero deps. Gated on `failedPackages` so two
+          // parents referencing the same unresolvable dep via different
+          // ranges land exactly one failed-true entry, matching the
+          // fetch-failure path's dedup pattern.
+          if (!failedPackages.has(name)) {
+            failedPackages.add(name);
+            tree[resolvedKey] = { version: resolvedVersion, dependencies: {}, failed: true };
+          }
           return;
         }
 

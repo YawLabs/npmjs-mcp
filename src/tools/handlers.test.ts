@@ -768,6 +768,79 @@ describe("Dependency handlers", () => {
     assert.equal(result.data.totalPackages, 4); // root, a, b, shared
   });
 
+  it("npm_dep_tree dedupes the resolve-failure placeholder when two parents reference the same unresolvable dep", async () => {
+    // root -> a, b ; both a and b depend on `weird` via different ranges that
+    // neither satisfy nor fall back to latest (weird has no dist-tags.latest).
+    // Without the failedPackages gate on the resolve-failure branch, both
+    // parents land separate failed-true entries and unresolvedCount inflates
+    // to 2 for one underlying unresolvable dep. Matches the fetch-failure
+    // path's dedup pattern.
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith("/root")) {
+        return new Response(
+          JSON.stringify({
+            name: "root",
+            "dist-tags": { latest: "1.0.0" },
+            versions: {
+              "1.0.0": {
+                name: "root",
+                version: "1.0.0",
+                dependencies: { a: "1.0.0", b: "1.0.0" },
+              },
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/a")) {
+        return new Response(
+          JSON.stringify({
+            name: "a",
+            "dist-tags": { latest: "1.0.0" },
+            versions: { "1.0.0": { name: "a", version: "1.0.0", dependencies: { weird: "^9.0.0" } } },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/b")) {
+        return new Response(
+          JSON.stringify({
+            name: "b",
+            "dist-tags": { latest: "1.0.0" },
+            versions: { "1.0.0": { name: "b", version: "1.0.0", dependencies: { weird: "~7.5.0" } } },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/weird")) {
+        return new Response(
+          JSON.stringify({
+            name: "weird",
+            "dist-tags": {},
+            versions: { "1.0.0": { name: "weird", version: "1.0.0", dependencies: {} } },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+
+    const tool = findTool(dependencyTools, "npm_dep_tree");
+    const result = (await tool.handler({ name: "root", depth: 3 })) as {
+      data: {
+        totalPackages: number;
+        unresolvedCount?: number;
+        tree: Record<string, { failed?: true }>;
+      };
+    };
+    const failedEntries = Object.entries(result.data.tree).filter(([, v]) => v.failed === true);
+    assert.equal(failedEntries.length, 1, "exactly one failed placeholder for weird, not two");
+    assert.match(failedEntries[0][0], /^weird@/);
+    assert.equal(result.data.unresolvedCount, 1, "unresolvedCount must be 1, not 2");
+    assert.equal(result.data.totalPackages, 3, "root, a, b resolve; weird is the only unresolved");
+  });
+
   it("npm_dep_tree marks a dep failed when no version satisfies the range AND there is no latest fallback", async () => {
     // root depends on weird@^9.0.0; weird's packument lists only 1.0.0 and has
     // no dist-tags.latest. Both range-resolution and the latest fallback miss,
@@ -962,6 +1035,90 @@ describe("Analysis handlers", () => {
     assert.deepEqual(Object.keys(body).sort(), ["express", "koa"]);
     assert.deepEqual(body.express, ["4.0.0"]);
     assert.deepEqual(body.koa, ["2.0.0"]);
+  });
+
+  it("npm_compare reports auditReliable=true on every row when the bulk audit succeeds", async () => {
+    mockFetchMulti({
+      "/-/npm/v1/security/advisories/bulk": { express: [], koa: [] },
+      "/downloads/point/last-week": { downloads: 1000 },
+      "/express": {
+        name: "express",
+        "dist-tags": { latest: "4.0.0" },
+        versions: { "4.0.0": { version: "4.0.0", license: "MIT" } },
+        time: { created: "2020-01-01", "4.0.0": "2024-01-01" },
+        maintainers: [],
+      },
+      "/koa": {
+        name: "koa",
+        "dist-tags": { latest: "2.0.0" },
+        versions: { "2.0.0": { version: "2.0.0", license: "MIT" } },
+        time: { created: "2018-01-01", "2.0.0": "2024-01-01" },
+        maintainers: [],
+      },
+    });
+    const tool = findTool(analysisTools, "npm_compare");
+    const result = (await tool.handler({ packages: ["express", "koa"] })) as {
+      data: { comparison: Array<{ name: string; auditReliable?: boolean }> };
+    };
+    for (const row of result.data.comparison) {
+      assert.equal(row.auditReliable, true, `${row.name} should have auditReliable=true after a successful audit`);
+    }
+  });
+
+  it("npm_compare reports auditReliable=false and vulnerabilities=null on every row when the bulk audit 5xx's", async () => {
+    // The whole motivation for the field — a transient 5xx must not silently
+    // report zero vulnerabilities for every compared package. Match the
+    // auditReliable signal we already surface in npm_health.
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    try {
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        const method = init?.method ?? "GET";
+        const headers: Record<string, string> = {};
+        let body: unknown;
+        if (init?.body) {
+          const raw = init.body.toString();
+          try {
+            body = JSON.parse(raw);
+          } catch {
+            body = raw;
+          }
+        }
+        lastRequest = { url, method, headers, body };
+        requests.push(lastRequest);
+        if (url.includes("/-/npm/v1/security/advisories/bulk")) {
+          return new Response("unavailable", { status: 503 });
+        }
+        if (url.includes("/downloads/")) {
+          return new Response(JSON.stringify({ downloads: 1000 }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        const name = url.endsWith("/express") ? "express" : "koa";
+        const latest = name === "express" ? "4.0.0" : "2.0.0";
+        return new Response(
+          JSON.stringify({
+            name,
+            "dist-tags": { latest },
+            versions: { [latest]: { version: latest, license: "MIT" } },
+            time: { created: "2020-01-01", [latest]: "2024-01-01" },
+            maintainers: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch;
+      const tool = findTool(analysisTools, "npm_compare");
+      const result = (await tool.handler({ packages: ["express", "koa"] })) as {
+        data: { comparison: Array<{ name: string; auditReliable?: boolean; vulnerabilities: number | null }> };
+      };
+      for (const row of result.data.comparison) {
+        assert.equal(row.auditReliable, false, `${row.name} should have auditReliable=false after audit 5xx`);
+        assert.equal(row.vulnerabilities, null, `${row.name} vulnerabilities must be null, not 0, when audit failed`);
+      }
+    } finally {
+      delete process.env.NPM_RETRY_BACKOFF_MS;
+    }
   });
 
   it("npm_compare attributes per-package vulnerability counts from the bulk audit response", async () => {
@@ -1190,6 +1347,133 @@ describe("Analysis handlers", () => {
     };
     assert.equal(result.data.signals.auditReliable, true);
     assert.equal(result.data.signals.vulnerabilityCount, 0);
+  });
+
+  it("npm_health assessment is AUDIT_UNKNOWN when audit 5xx's on an otherwise-fine recent package", async () => {
+    // The headline assessment must not silently downgrade to ACTIVE/MAINTENANCE
+    // just because audit was unreliable. Callers reading only `.assessment`
+    // would otherwise see a confident "fine" verdict on unverified data.
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    try {
+      const recent = new Date(Date.now() - 7 * 86_400_000).toISOString();
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        const method = init?.method ?? "GET";
+        const headers: Record<string, string> = {};
+        let body: unknown;
+        if (init?.body) {
+          const raw = init.body.toString();
+          try {
+            body = JSON.parse(raw);
+          } catch {
+            body = raw;
+          }
+        }
+        lastRequest = { url, method, headers, body };
+        requests.push(lastRequest);
+        if (url.includes("/-/npm/v1/security/advisories/bulk")) {
+          return new Response("unavailable", { status: 503 });
+        }
+        if (url.includes("/downloads/")) {
+          return new Response(JSON.stringify({ downloads: 1000 }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            name: "express",
+            "dist-tags": { latest: "4.18.2" },
+            versions: { "4.18.2": { version: "4.18.2", license: "MIT" } },
+            time: { created: "2010-01-01", modified: recent, "4.18.2": recent },
+            maintainers: [{ name: "dougwilson" }],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch;
+      const tool = findTool(analysisTools, "npm_health");
+      const result = (await tool.handler({ name: "express" })) as {
+        data: { assessment: string; signals: { auditReliable: boolean } };
+      };
+      assert.equal(result.data.signals.auditReliable, false);
+      assert.equal(result.data.assessment, "AUDIT_UNKNOWN");
+    } finally {
+      delete process.env.NPM_RETRY_BACKOFF_MS;
+    }
+  });
+
+  it("npm_health assessment is AUDIT_UNKNOWN when the packument has no dist-tags.latest", async () => {
+    // Mirrors the assessment shape of the audit-5xx case for the "nothing to
+    // audit" path. An empty package shouldn't end up as ACTIVE/MAINTENANCE.
+    mockFetchMulti({
+      "/downloads/point/last-week": { downloads: 0 },
+      "/downloads/point/last-month": { downloads: 0 },
+      "/ghost": {
+        name: "ghost",
+        "dist-tags": {},
+        versions: {},
+        time: { created: "2010-01-01" },
+        maintainers: [],
+      },
+    });
+    const tool = findTool(analysisTools, "npm_health");
+    const result = (await tool.handler({ name: "ghost" })) as {
+      data: { assessment: string; signals: { auditReliable: boolean } };
+    };
+    assert.equal(result.data.signals.auditReliable, false);
+    assert.equal(result.data.assessment, "AUDIT_UNKNOWN");
+  });
+
+  it("npm_health assessment stays DEPRECATED even when audit is unreliable", async () => {
+    // DEPRECATED takes priority over AUDIT_UNKNOWN — a known-bad package
+    // should keep its loudest signal regardless of whether audit ran.
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    try {
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        const method = init?.method ?? "GET";
+        const headers: Record<string, string> = {};
+        let body: unknown;
+        if (init?.body) {
+          const raw = init.body.toString();
+          try {
+            body = JSON.parse(raw);
+          } catch {
+            body = raw;
+          }
+        }
+        lastRequest = { url, method, headers, body };
+        requests.push(lastRequest);
+        if (url.includes("/-/npm/v1/security/advisories/bulk")) {
+          return new Response("unavailable", { status: 503 });
+        }
+        if (url.includes("/downloads/")) {
+          return new Response(JSON.stringify({ downloads: 100 }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            name: "deadpkg",
+            "dist-tags": { latest: "1.0.0" },
+            versions: {
+              "1.0.0": { version: "1.0.0", deprecated: "use newpkg instead", license: "MIT" },
+            },
+            time: { created: "2020-01-01", "1.0.0": "2024-01-01" },
+            maintainers: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch;
+      const tool = findTool(analysisTools, "npm_health");
+      const result = (await tool.handler({ name: "deadpkg" })) as {
+        data: { assessment: string };
+      };
+      assert.equal(result.data.assessment, "DEPRECATED");
+    } finally {
+      delete process.env.NPM_RETRY_BACKOFF_MS;
+    }
   });
 
   it("npm_health reports auditReliable: false when the audit endpoint 5xx's", async () => {

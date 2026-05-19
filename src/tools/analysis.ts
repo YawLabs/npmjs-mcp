@@ -40,6 +40,9 @@ export const analysisTools = [
       // Step 2: one batched audit POST for every resolvable package — replaces
       // N per-package POSTs to the same endpoint. The advisory map is keyed by
       // name, so the registry returns per-package advisory lists in one round-trip.
+      // `auditSucceeded` distinguishes "bulk POST returned data" from "POST failed",
+      // so per-package rows can report auditReliable accurately rather than silently
+      // reporting zero vulnerabilities on a 5xx.
       const auditMap: Record<string, string[]> = {};
       for (const { name, pkgRes } of partials) {
         if (!pkgRes.ok) continue;
@@ -47,9 +50,13 @@ export const analysisTools = [
         if (latest) auditMap[name] = [latest];
       }
       let auditData: Record<string, unknown[]> = {};
+      let auditSucceeded = false;
       if (Object.keys(auditMap).length > 0) {
         const auditRes = await registryPost<Record<string, unknown[]>>("/-/npm/v1/security/advisories/bulk", auditMap);
-        if (auditRes.ok && auditRes.data) auditData = auditRes.data;
+        if (auditRes.ok && auditRes.data) {
+          auditData = auditRes.data;
+          auditSucceeded = true;
+        }
       }
 
       // Step 3: assemble per-package rows. Per-package failures route through
@@ -65,8 +72,14 @@ export const analysisTools = [
         const latest = pkg["dist-tags"]?.latest;
         const latestVersion = latest ? pkg.versions[latest] : undefined;
         const versionKeys = Object.keys(pkg.versions);
+        // `auditReliable` is true iff the bulk POST returned for this package's
+        // latest version. When false, `vulnerabilities` is null rather than 0 —
+        // a 5xx on the bulk endpoint must not silently report "clean" for every
+        // row. Packages without a `latest` (so they were never in auditMap) also
+        // get auditReliable=false; nothing to audit.
+        const wasAudited = auditSucceeded && name in auditMap;
         const advisories = auditData[name];
-        const vulnerabilities = Array.isArray(advisories) ? advisories.length : 0;
+        const vulnerabilities = wasAudited ? (Array.isArray(advisories) ? advisories.length : 0) : null;
 
         return {
           name,
@@ -83,6 +96,7 @@ export const analysisTools = [
           repository: pkg.repository,
           homepage: pkg.homepage,
           vulnerabilities,
+          auditReliable: wasAudited,
         };
       });
 
@@ -192,16 +206,21 @@ export const analysisTools = [
           // Holistic single-string verdict layered priority-first: a deprecated
           // package supersedes everything (don't use it), a vulnerable package
           // supersedes maintenance signals (active development doesn't undo a
-          // CVE), then staleness, recency, and the catch-all.
+          // CVE), then AUDIT_UNKNOWN when we couldn't verify vuln status (a 5xx
+          // on the audit endpoint or a packument with no `latest` to audit) --
+          // better to flag the unknown than confidently report ACTIVE on
+          // unverified data. Then staleness, recency, and the catch-all.
           assessment: isDeprecated
             ? "DEPRECATED"
             : vulnerabilityCount !== null && vulnerabilityCount > 0
               ? "VULNERABLE"
-              : isStale
-                ? "STALE"
-                : daysSinceLastPublish !== null && daysSinceLastPublish < 90
-                  ? "ACTIVE"
-                  : "MAINTENANCE",
+              : !auditReliable
+                ? "AUDIT_UNKNOWN"
+                : isStale
+                  ? "STALE"
+                  : daysSinceLastPublish !== null && daysSinceLastPublish < 90
+                    ? "ACTIVE"
+                    : "MAINTENANCE",
         },
       } as ApiResponse;
     },

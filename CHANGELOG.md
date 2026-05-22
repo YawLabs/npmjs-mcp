@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.13] -- 2026-05-22
+
+### Fixed
+- `npm_deprecate` / `npm_undeprecate` now PUT to `/{pkg}/-rev/{_rev}` with couch metadata (`_attachments`, `_revisions`) stripped, matching the `npm_unpublish_version` flow. Previously the handlers PUT the whole packument back to `/{pkg}` without the rev segment -- the lone outlier across the write tools. The registry tolerated the echo, but the call shape was a silent regression risk if npm tightens optimistic-concurrency on the deprecate endpoint.
+- `npm_publish_preflight` no longer reports `READY to publish` / `canPublishHeadless: true` when 2FA is disabled but the account holds only readonly tokens. The token-inventory check now runs regardless of 2FA state and adds a `Token capability fail` entry in the 2FA-off + zero-RW-tokens case.
+- `api.ts` request loop no longer retries a successful 2xx with chunked transfer-encoding and an empty body. The empty body previously threw inside `res.json()` and was caught as a network error, triggering a redundant retry of a request the server already handled.
+- `npm_types` validates the source package name up front so a malformed name returns a clean 400 instead of throwing inside `encPkg` during the parallel-fetch block.
+- `hooks.validateHookTarget` intercepts bare `~` and `@` sigils with a message naming what is missing (`Hook target '~' is missing the username (use '~your-username')`, `Hook target '@' is missing the scope (use '@scope' or '@scope/pkg')`), instead of the post-classify composite (`Invalid hook target '~': Username is empty`).
+
+### Documentation
+- `registryDeleteAuth` carries a comment on the DELETE-with-body footgun used by `npm_team_revoke` and `npm_team_member_remove`. The npm registry tolerates the shape today but the request only works when no HTTP intermediary sits in the path -- corporate proxies, some CDNs, and certain service-mesh sidecars strip DELETE request bodies.
+- `npm_dist_tag_set` comment matches the actual body shape. The prior wording (`wrapped as a JSON string body`) implied an extra JSON-wrap layer that wasn't in the code; the registry expects the version string passed through `registryPutAuth`'s `JSON.stringify` to land as `"1.2.3"` on the wire, which is what the existing code already does.
+
 ## [0.11.12] -- 2026-05-19
 
 ### Fixed

@@ -138,7 +138,22 @@ export const writeTools = [
         packument.versions[v].deprecated = input.message;
       }
 
-      const putRes = await registryPutAuth(`/${encPkg(input.name)}`, packument);
+      if (!packument._rev) {
+        return {
+          ok: false,
+          status: 500,
+          error: `Packument for ${input.name} missing _rev -- cannot deprecate. Try again; this is usually transient.`,
+        };
+      }
+
+      // Couch metadata must not be echoed back -- mirrors the unpublish flow.
+      delete packument._revisions;
+      delete packument._attachments;
+
+      const putRes = await registryPutAuth(
+        `/${encPkg(input.name)}/-rev/${encodeURIComponent(packument._rev)}`,
+        packument,
+      );
       if (!putRes.ok) return translateError(putRes, { pkg: input.name, op: "deprecate (write)" });
 
       return {
@@ -197,7 +212,22 @@ export const writeTools = [
         packument.versions[v].deprecated = "";
       }
 
-      const putRes = await registryPutAuth(`/${encPkg(input.name)}`, packument);
+      if (!packument._rev) {
+        return {
+          ok: false,
+          status: 500,
+          error: `Packument for ${input.name} missing _rev -- cannot undeprecate. Try again; this is usually transient.`,
+        };
+      }
+
+      // Couch metadata must not be echoed back -- mirrors the unpublish flow.
+      delete packument._revisions;
+      delete packument._attachments;
+
+      const putRes = await registryPutAuth(
+        `/${encPkg(input.name)}/-rev/${encodeURIComponent(packument._rev)}`,
+        packument,
+      );
       if (!putRes.ok) return translateError(putRes, { pkg: input.name, op: "undeprecate (write)" });
 
       return {
@@ -444,7 +474,9 @@ export const writeTools = [
       const tagErr = validateTag(input.tag);
       if (tagErr) return { ok: false, status: 400, error: tagErr };
 
-      // Registry expects the version wrapped as a JSON string body.
+      // Registry expects a JSON string as the body. Passing input.version
+      // (already a string) through registryPutAuth's JSON.stringify yields
+      // `"1.2.3"` on the wire -- the shape the dist-tags endpoint requires.
       const putRes = await registryPutAuth(
         `/-/package/${encPkg(input.name)}/dist-tags/${encTag(input.tag)}`,
         input.version,

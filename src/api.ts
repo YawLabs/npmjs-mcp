@@ -246,8 +246,16 @@ async function request<T = unknown>(
         return { ok: true, status: res.status };
       }
 
-      const data = (await res.json()) as T;
+      // Read as text first so a 2xx with chunked transfer-encoding and an
+      // empty body (no content-length header set) returns success rather than
+      // throwing inside res.json() and getting caught below as a "network
+      // error" -- which would then retry a request the server already handled.
+      const text = await res.text();
       debug(`${method} ${url} -> ${res.status} ${elapsed}ms`);
+      if (text.length === 0) {
+        return { ok: true, status: res.status };
+      }
+      const data = JSON.parse(text) as T;
       return { ok: true, status: res.status, data };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -298,6 +306,17 @@ export function registryPutAuth<T = unknown>(path: string, body: unknown): Promi
   return request<T>(getRegistryUrl(), path, { method: "PUT", body, headers: authHeaders() });
 }
 
+/**
+ * Authenticated DELETE. Accepts an optional body for endpoints that require it
+ * (`npm_team_revoke`, `npm_team_member_remove`). DELETE-with-body is a known
+ * footgun: many HTTP intermediaries (corporate proxies, some CDNs, certain
+ * service-mesh sidecars) strip request bodies on DELETE per the older RFC
+ * guidance. The npm registry currently accepts DELETE-with-body for these
+ * team-membership endpoints, but the request shape is only safe when there is
+ * no proxy between the caller and `registry.npmjs.org`. If anything tightens
+ * upstream or a proxy lands in the path, the body silently vanishes and the
+ * registry treats the call as an unparameterised DELETE.
+ */
 export function registryDeleteAuth<T = unknown>(path: string, body?: unknown): Promise<ApiResponse<T>> {
   return request<T>(getRegistryUrl(), path, { method: "DELETE", body, headers: authHeaders() });
 }

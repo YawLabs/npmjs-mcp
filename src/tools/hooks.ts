@@ -35,8 +35,22 @@ function classifyHookTarget(target: string): { type: "package" | "scope" | "owne
  * target with name `@scope/pkg`, which is not a valid npm username), null if safe.
  * Catches the bug class where classification succeeds but the payload would be
  * silently rejected by the registry with an opaque error.
+ *
+ * Bare sigils ('~', '@') are intercepted up front -- the post-classification
+ * validators produce technically-correct but awkward composite messages
+ * (`Invalid hook target '~': Username is empty`) for these; the explicit
+ * branches name what is actually missing.
  */
 function validateHookTarget(target: string): string | null {
+  if (typeof target !== "string" || target.length === 0) {
+    return "Hook target is empty.";
+  }
+  if (target === "~") {
+    return "Hook target '~' is missing the username (use '~your-username').";
+  }
+  if (target === "@") {
+    return "Hook target '@' is missing the scope (use '@scope' or '@scope/pkg').";
+  }
   const { type, name } = classifyHookTarget(target);
   if (type === "owner") return validateUsername(name);
   if (type === "scope") return validateScope(name);

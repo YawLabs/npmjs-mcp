@@ -229,6 +229,16 @@ export const workflowTools = [
                 });
                 canPublishHeadless = false;
               }
+            } else if (twoFactorAuth === "disabled" && readWriteTokens.length === 0) {
+              // 2FA off but the account holds only readonly tokens. Without this
+              // branch the 2FA-disabled path would short-circuit to canPublishHeadless=true
+              // and the summary would read READY despite no token having publish capability.
+              checks.push({
+                check: "Token capability",
+                status: "fail",
+                detail: `2FA is disabled but no read-write tokens found out of ${totalTokens} total. Need a token with publish permissions.`,
+              });
+              canPublishHeadless = false;
             }
 
             // Org-level token reuse check

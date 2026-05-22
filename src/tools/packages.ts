@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { encPkg, registryGet } from "../api.js";
+import { encPkg, registryGet, validatePackageName } from "../api.js";
 import { translateError } from "../errors.js";
 import type { Packument, VersionDoc } from "../types.js";
 
@@ -212,6 +212,12 @@ export const packageTools = [
       version: z.string().optional().describe("Semver version or dist-tag (default: 'latest')"),
     }),
     handler: async (input: { name: string; version?: string }) => {
+      // Validate up front so a malformed source name returns a clean 400
+      // instead of throwing later in encPkg (where it surfaces as an
+      // uncaught exception in the parallel-fetch block).
+      const nameErr = validatePackageName(input.name);
+      if (nameErr) return { ok: false, status: 400, error: nameErr };
+
       const ver = input.version ?? "latest";
 
       // Derive the @types package name:

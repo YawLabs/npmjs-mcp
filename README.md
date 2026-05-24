@@ -38,7 +38,7 @@ macOS / Linux / WSL:
   "mcpServers": {
     "npm": {
       "command": "npx",
-      "args": ["-y", "@yawlabs/npmjs-mcp"]
+      "args": ["-y", "@yawlabs/npmjs-mcp@latest"]
     }
   }
 }
@@ -51,7 +51,7 @@ Windows:
   "mcpServers": {
     "npm": {
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "@yawlabs/npmjs-mcp"]
+      "args": ["/c", "npx", "-y", "@yawlabs/npmjs-mcp@latest"]
     }
   }
 }
@@ -72,7 +72,7 @@ Read-only tools work without any setup. For write tools (`deprecate`, `dist-tag`
   "mcpServers": {
     "npm": {
       "command": "npx",
-      "args": ["-y", "@yawlabs/npmjs-mcp"],
+      "args": ["-y", "@yawlabs/npmjs-mcp@latest"],
       "env": {
         "NPM_TOKEN": "npm_xxxxxxxxxxxx"
       }

@@ -276,6 +276,79 @@ describe("npm_deprecate", () => {
     assert.equal(result.ok, false);
     assert.match(result.error, /Authentication failed/);
   });
+
+  // ─── GAP 1: requireAuth short-circuits when NPM_TOKEN is UNSET ───
+  it("short-circuits 401 + token-setup guidance when NPM_TOKEN is unset, with no network call", async () => {
+    // The shared `before` hook sets NPM_TOKEN for the whole file; delete it for
+    // this one case and restore in finally so the rest of the suite is unaffected.
+    const saved = process.env.NPM_TOKEN;
+    delete process.env.NPM_TOKEN;
+    // Mock the network so that, if requireAuth ever failed to short-circuit, we'd
+    // see a request recorded and the lastRequest assertion below would catch it.
+    mockFetchSequence([{ status: 200, body: samplePackument() }]);
+    try {
+      const tool = findTool(writeTools, "npm_deprecate");
+      const result = (await tool.handler({
+        name: "@test/pkg",
+        message: "deprecated — use newpkg",
+      })) as { ok: boolean; status: number; error: string };
+      assert.equal(result.ok, false);
+      assert.equal(result.status, 401);
+      assert.match(result.error, /No NPM_TOKEN configured/);
+      assert.match(result.error, /Set the NPM_TOKEN environment variable/);
+      assert.match(result.error, /Granular Access Token/);
+      // requireAuth runs before any fetch -- the registry must not be touched.
+      assert.equal(lastRequest, undefined);
+      assert.equal(requests.length, 0);
+    } finally {
+      process.env.NPM_TOKEN = saved;
+    }
+  });
+
+  // ─── GAP 2: missing-_rev guard returns 500 when the packument lacks _rev ───
+  it("returns 500 when the fetched packument lacks _rev (missing-rev guard)", async () => {
+    // Packument has versions (so versionsSatisfying finds affected versions and
+    // execution reaches the _rev guard) but no _rev field. Only the GET fires;
+    // the PUT write-step is never reached.
+    const noRev = samplePackument();
+    // biome-ignore lint/performance/noDelete: removing the key models the registry omitting _rev
+    delete (noRev as Record<string, unknown>)._rev;
+    mockFetchSequence([{ status: 200, body: noRev }]);
+    const tool = findTool(writeTools, "npm_deprecate");
+    const result = (await tool.handler({
+      name: "@test/pkg",
+      message: "deprecated — use newpkg",
+    })) as { ok: boolean; status: number; error: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 500);
+    assert.match(result.error, /missing _rev/);
+    // Only the GET happened -- no PUT, since the guard fires before the write.
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].method, "GET");
+  });
+
+  // ─── GAP 3: the PUT write-step (not just the GET) translates a 422 ───
+  it("translates a 422 from the PUT write-step into actionable error", async () => {
+    // GET returns a valid packument with _rev; the PUT then 422s. The handler
+    // must run translateError on the PUT response, not just the GET.
+    mockFetchSequence([
+      { status: 200, body: samplePackument() }, // GET packument (ok)
+      { status: 422, body: { error: "Unprocessable" } }, // PUT write (rejected)
+    ]);
+    const tool = findTool(writeTools, "npm_deprecate");
+    const result = (await tool.handler({
+      name: "@test/pkg",
+      message: "deprecated — use newpkg",
+    })) as { ok: boolean; status: number; error: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 422);
+    assert.match(result.error, /Registry rejected the request payload/);
+    assert.match(result.error, /422/);
+    assert.match(result.error, /semver range/);
+    // Confirm the failure came from the PUT step, not the GET.
+    assert.equal(requests.length, 2);
+    assert.equal(requests[1].method, "PUT");
+  });
 });
 
 // ─── npm_undeprecate ───
@@ -524,6 +597,47 @@ describe("npm_unpublish_package", () => {
     };
     assert.equal(result.ok, false);
     assert.equal(result.status, 400);
+  });
+
+  // ─── GAP 2: missing-_rev guard returns 500 when the packument lacks _rev ───
+  it("returns 500 when the fetched packument lacks _rev (missing-rev guard)", async () => {
+    const noRev = samplePackument();
+    // biome-ignore lint/performance/noDelete: removing the key models the registry omitting _rev
+    delete (noRev as Record<string, unknown>)._rev;
+    mockFetchSequence([{ status: 200, body: noRev }]);
+    const tool = findTool(writeTools, "npm_unpublish_package");
+    const result = (await tool.handler({ name: "@test/pkg", confirm: true })) as {
+      ok: boolean;
+      status: number;
+      error: string;
+    };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 500);
+    assert.match(result.error, /missing _rev/);
+    // Only the GET fired -- the DELETE write-step is never reached.
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].method, "GET");
+  });
+
+  // ─── GAP 3: the DELETE write-step (not just the GET) translates a 403 ───
+  it("translates a 403 from the DELETE write-step into actionable error", async () => {
+    mockFetchSequence([
+      { status: 200, body: samplePackument() }, // GET packument (ok, has _rev)
+      { status: 403, body: { error: "Forbidden" } }, // DELETE write (rejected)
+    ]);
+    const tool = findTool(writeTools, "npm_unpublish_package");
+    const result = (await tool.handler({ name: "@test/pkg", confirm: true })) as {
+      ok: boolean;
+      status: number;
+      error: string;
+    };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 403);
+    assert.match(result.error, /Not authorized/);
+    assert.match(result.error, /npm_collaborators/);
+    // The failure came from the DELETE step, not the GET.
+    assert.equal(requests.length, 2);
+    assert.equal(requests[1].method, "DELETE");
   });
 });
 
@@ -869,6 +983,51 @@ describe("npm_owner_add", () => {
     })) as { ok: boolean; data: { alreadyOwner: boolean } };
     assert.equal(result.ok, true);
     assert.equal(result.data.alreadyOwner, true);
+    assert.equal(requests.filter((r) => r.method === "PUT").length, 0);
+  });
+
+  // ─── GAP 4: user-resolve step 404s for a nonexistent user (writes.ts:572-575) ───
+  it("translates a 404 from the /-/user resolve step (nonexistent user)", async () => {
+    // The first call is the user resolve to /-/user/org.couchdb.user:<user>.
+    // A nonexistent user 404s there; the handler must translate it and stop
+    // before touching the packument.
+    mockFetchSequence([{ status: 404, body: { error: "user not found" } }]);
+    const tool = findTool(writeTools, "npm_owner_add");
+    const result = (await tool.handler({
+      name: "@test/pkg",
+      username: "ghost",
+    })) as { ok: boolean; status: number; error: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 404);
+    assert.match(result.error, /Not found/);
+    // Only the user-resolve GET fired -- the packument fetch is never reached.
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].method, "GET");
+    assert.match(requests[0].url, /\/-\/user\/org\.couchdb\.user:ghost$/);
+  });
+
+  // ─── GAP 2: missing-_rev guard returns 500 when the packument lacks _rev ───
+  it("returns 500 when the fetched packument lacks _rev (missing-rev guard)", async () => {
+    // User resolves (new user, not already a maintainer), then the packument
+    // fetch comes back without _rev -- execution reaches the _rev guard before
+    // the PUT write-step.
+    const noRev = samplePackument();
+    // biome-ignore lint/performance/noDelete: removing the key models the registry omitting _rev
+    delete (noRev as Record<string, unknown>)._rev;
+    mockFetchSequence([
+      { status: 200, body: { name: "bob", email: "bob@test.com" } }, // user resolve
+      { status: 200, body: noRev }, // packument fetch (no _rev)
+    ]);
+    const tool = findTool(writeTools, "npm_owner_add");
+    const result = (await tool.handler({
+      name: "@test/pkg",
+      username: "bob",
+    })) as { ok: boolean; status: number; error: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 500);
+    assert.match(result.error, /missing _rev/);
+    // user-resolve GET + packument GET, but no PUT.
+    assert.equal(requests.length, 2);
     assert.equal(requests.filter((r) => r.method === "PUT").length, 0);
   });
 });

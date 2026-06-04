@@ -49,6 +49,17 @@ export const searchTools = [
       popularity?: number;
       maintenance?: number;
     }) => {
+      // Reject empty/whitespace-only queries up front so callers get an
+      // actionable 400 instead of a registry round-trip that always returns
+      // total: 0 (and silently masks caller bugs like passing `query: ""`).
+      if (input.query.trim() === "") {
+        return {
+          ok: false,
+          status: 400,
+          error: "Query cannot be empty. Provide a search term or qualifier (e.g. 'mcp', 'keywords:react').",
+        };
+      }
+
       const params = new URLSearchParams({ text: input.query });
       if (input.size !== undefined) params.set("size", String(input.size));
       if (input.from !== undefined) params.set("from", String(input.from));
@@ -59,7 +70,11 @@ export const searchTools = [
       const res = await registryGet<SearchResult>(`/-/v1/search?${params}`);
       if (!res.ok) return translateError(res, { op: `search "${input.query}"` });
 
-      const results = res.data!.objects.map((obj) => ({
+      // A 2xx with an empty/absent body yields ok:true with no data (see api.ts
+      // empty-body handling). Guard so a degraded-but-200 response returns an
+      // empty result set instead of throwing on res.data!.objects.
+      const objects = res.data?.objects ?? [];
+      const results = objects.map((obj) => ({
         name: obj.package.name,
         version: obj.package.version,
         description: obj.package.description,
@@ -71,7 +86,7 @@ export const searchTools = [
         score: obj.score.detail,
       }));
 
-      return { ok: true, status: 200, data: { total: res.data!.total, results } };
+      return { ok: true, status: 200, data: { total: res.data?.total ?? objects.length, results } };
     },
   },
 ] as const;

@@ -51,7 +51,10 @@ export const registryTools = [
 
       if (!changesRes.ok) return translateError(changesRes, { op: "recent_changes" });
 
-      const changes = changesRes.data!.results.map((r) => ({
+      // replicate.npmjs.com is flaky (see description) — a degraded 2xx with an
+      // empty body yields ok:true with no data. Guard both reads so that surfaces
+      // as an empty result rather than a thrown TypeError.
+      const changes = (changesRes.data?.results ?? []).map((r) => ({
         package: r.id,
         rev: r.changes[0]?.rev,
       }));
@@ -60,7 +63,13 @@ export const registryTools = [
         ok: true,
         status: 200,
         data: {
-          totalPackages: dbRes.ok ? dbRes.data!.doc_count : null,
+          // `totalPackages` is the registry doc-count from replicate.npmjs.com
+          // (the entire npm registry, ~3M) -- NOT the count of returned
+          // changes. `changes.length` is the per-call result size. The field
+          // name reads as if it were a per-call count; this comment pins the
+          // semantic so a consumer reading "totalPackages: 50" doesn't assume
+          // only 50 packages exist on the registry.
+          totalPackages: dbRes.data?.doc_count ?? null,
           changes,
         },
       };

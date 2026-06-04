@@ -62,6 +62,15 @@ export const analysisTools = [
       // Step 3: assemble per-package rows. Per-package failures route through
       // translateError so the error shape matches the rest of the codebase
       // (raw passthrough used to diverge from npm_health).
+      //
+      // `auditReliable` is load-bearing below: when false, `vulnerabilities`
+      // is `null`, not `0` -- a transient 5xx on the bulk audit endpoint
+      // must not silently report "clean" for every row. Consumers that only
+      // check `vulnerabilities > 0` get the right answer; the `auditReliable`
+      // field is the escape hatch for callers that need to distinguish
+      // "clean" from "not audited". Pinned by handlers.test.ts case
+      // "npm_compare reports auditReliable=false and vulnerabilities=null on
+      // every row when the bulk audit 5xx's".
       const results = partials.map(({ name, pkgRes, dlRes }) => {
         if (!pkgRes.ok) {
           const translated = translateError(pkgRes, { pkg: name, op: "compare" });
@@ -87,7 +96,10 @@ export const analysisTools = [
           latest,
           license: pkg.license ?? latestVersion?.license,
           maintainers: pkg.maintainers?.map((m) => m.name),
-          weeklyDownloads: dlRes.ok ? dlRes.data!.downloads : null,
+          // Guard on data presence, not just .ok: a 2xx with an empty body yields
+          // ok:true with no data (api.ts), and dlRes.data!.downloads would throw
+          // and crash the whole compare. Degrade to null instead.
+          weeklyDownloads: dlRes.ok && dlRes.data ? dlRes.data.downloads : null,
           versionCount: versionKeys.length,
           created: pkg.time.created,
           lastPublish: latest ? pkg.time[latest] : undefined,
@@ -188,8 +200,10 @@ export const analysisTools = [
           name: pkg.name,
           latest,
           signals: {
-            weeklyDownloads: dlWeekRes.ok ? dlWeekRes.data!.downloads : null,
-            monthlyDownloads: dlMonthRes.ok ? dlMonthRes.data!.downloads : null,
+            // Guard on data presence, not just .ok: an empty-body 2xx yields
+            // ok:true with no data (api.ts); degrade to null rather than throw.
+            weeklyDownloads: dlWeekRes.ok && dlWeekRes.data ? dlWeekRes.data.downloads : null,
+            monthlyDownloads: dlMonthRes.ok && dlMonthRes.data ? dlMonthRes.data.downloads : null,
             maintainerCount: pkg.maintainers?.length ?? 0,
             versionCount: versionKeys.length,
             daysSinceLastPublish,

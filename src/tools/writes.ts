@@ -907,8 +907,10 @@ export const writeTools = [
   {
     name: "npm_team_delete",
     description:
-      "Delete a team. Team is passed as '@scope:team'. Revokes all package permissions that team held. " +
-      "Requires confirm: true — this removes the team and all its package grants in one call.",
+      "Delete a team. Team is passed as '@scope:team'. Revokes all package permissions that team held, " +
+      "and team memberships are also removed. Requires confirm: true — this removes the team and " +
+      "all its package grants in one call. List the team's current grants with npm_team_packages " +
+      "first if you need to preserve them.",
     annotations: {
       title: "Delete team",
       readOnlyHint: false,

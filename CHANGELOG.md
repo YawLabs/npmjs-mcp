@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] -- 2026-06-04
+
+### Fixed
+- `errors.translateError` now covers HTTP 409 (version conflict, e.g. concurrent publish/deprecate racing the `_rev`) and 5xx (registry outage). Both statuses previously fell through to the raw passthrough, surfacing opaque `Raw: <body>` to callers. The 409 case names the re-run behavior (each write re-fetches the current `_rev`).
+- `access` handlers tolerate `ok:true` with no data in collaborators/team responses. The `api.ts` empty-body short-circuit returns `ok:true` with no data on 2xx-with-no-content, so `res.data!.members` would have thrown on the next access. Mirrors the `res.data ?? {}` pattern already used in tokens, search, and `recent_changes`.
+- `provenance` handler reads `res.data?.attestations ?? []` instead of `res.data!.attestations`. Same empty-body guard.
+- `npm_verify_token` distinguishes "token valid, 2FA state unknown" (profile fetch failed) from "token valid, 2FA disabled". Previously the tool reported `enabled:false` on a 5xx from `/-/npm/v1/user`, telling the caller "no 2FA" when the truth was "we couldn't read it" -- the exact misleading signal this tool exists to prevent. The `unknown` shape includes a `warning` field naming the failed call and its HTTP status.
+
+### Documentation
+- `npm_team_delete` description calls out the cascade explicitly (team memberships removed, all package grants revoked) and points at `npm_team_packages` as the pre-check. Matches the wording already in `npm_org_member_remove`.
+- `npm_compare` carries an inline comment above the per-package row assembly naming `auditReliable` as load-bearing. When `auditReliable: false`, `vulnerabilities` is `null`, not `0` -- a 5xx on the bulk audit endpoint must not silently report "clean" for every row. Test pinning this lives at `handlers.test.ts:1068-1122`.
+- `npm_recent_changes.totalPackages` carries a comment clarifying that it is the registry-wide doc count from `replicate.npmjs.com` (the entire npm registry, ~3M), NOT the per-call `changes.length`. Field name reads as if it were a per-call count; the comment pins the semantic.
+
+### Changed
+- `search.npm_search` rejects empty/whitespace-only queries with a 400 before the registry round-trip. The registry returns `total: 0` on `text=` which silently masks caller bugs like `query: ""`. Error string names the expected input shape.
+- `tsconfig.json` module + moduleResolution flipped from `Node16` to `NodeNext`. Forward-compat with the ESM-first posture already declared in `package.json` (`type: "module"`, `.js` extensions on imports). Build, typecheck, and full test suite (736/736) all pass under NodeNext.
+
 ## [0.11.13] -- 2026-05-22
 
 ### Fixed

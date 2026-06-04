@@ -44,12 +44,23 @@ export function translateError<T>(res: ApiResponse<T>, context: { pkg?: string; 
         ...res,
         error: `Rate limited${opPart}. Retried automatically and still failed — wait longer and retry, or contact npm support if this persists. Raw: ${res.error}`,
       };
+    case 409:
+      return {
+        ...res,
+        error: `Version conflict${pkgPart}${opPart}. The package metadata changed between read and write (a concurrent publish, deprecate, or registry _rev bump). Re-run the operation — it re-fetches the current _rev each call. Raw: ${res.error}`,
+      };
     case 0:
       return {
         ...res,
         error: `Network error${opPart}. Could not reach the registry. Raw: ${res.error}`,
       };
     default:
+      if (res.status >= 500) {
+        return {
+          ...res,
+          error: `Registry server error${pkgPart}${opPart} (HTTP ${res.status}). Retried automatically and still failed — the registry is likely having a transient outage. Wait and retry; check https://status.npmjs.org if it persists. Raw: ${res.error}`,
+        };
+      }
       return res;
   }
 }

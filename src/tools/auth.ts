@@ -155,14 +155,27 @@ export const authTools = [
       // `pending: true` means a 2FA enrollment was started but not completed —
       // protection is not yet in force. Mirror the reading in npm_profile and
       // npm_check_auth so all three tools agree on the same token's 2FA state.
-      const tfaData = profile.ok ? profile.data?.tfa : null;
-      const tfa = tfaData
-        ? {
-            enabled: !tfaData.pending,
-            mode: tfaData.mode,
-            ...(tfaData.pending ? { pending: true } : {}),
-          }
-        : { enabled: false };
+      //
+      // If the profile fetch itself failed (whoami already proved the token is
+      // valid, but /-/npm/v1/user 5xx'd or blipped), do NOT report enabled:false —
+      // that would tell the caller "no 2FA" when the truth is "we couldn't read
+      // it", the exact misleading signal this tool exists to prevent.
+      let tfa: Record<string, unknown>;
+      if (!profile.ok) {
+        tfa = {
+          unknown: true,
+          warning: `2FA status unknown: profile lookup failed (HTTP ${profile.status}). Token is valid (whoami passed) but write-readiness could not be fully assessed. Raw: ${profile.error}`,
+        };
+      } else {
+        const tfaData = profile.data?.tfa;
+        tfa = tfaData
+          ? {
+              enabled: !tfaData.pending,
+              mode: tfaData.mode,
+              ...(tfaData.pending ? { pending: true } : {}),
+            }
+          : { enabled: false };
+      }
 
       return {
         ok: true,

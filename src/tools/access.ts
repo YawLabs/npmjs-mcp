@@ -25,7 +25,7 @@ export const accessTools = [
       const res = await registryGetAuth<Record<string, string>>(`/-/package/${encPkg(input.name)}/collaborators`);
       if (!res.ok) return translateError(res, { pkg: input.name, op: "collaborators" });
 
-      const collaborators = Object.entries(res.data!).map(([username, permissions]) => ({
+      const collaborators = Object.entries(res.data ?? {}).map(([username, permissions]) => ({
         username,
         permissions,
       }));
@@ -84,7 +84,7 @@ export const accessTools = [
       }
 
       if (collabRes.ok) {
-        result.collaborators = Object.entries(collabRes.data!).map(([username, permissions]) => ({
+        result.collaborators = Object.entries(collabRes.data ?? {}).map(([username, permissions]) => ({
           username,
           permissions,
         }));

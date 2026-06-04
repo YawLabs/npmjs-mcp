@@ -37,7 +37,7 @@ export const provenanceTools = [
       );
       if (!res.ok) return translateError(res, { pkg: input.name, op: `provenance ${input.version}` });
 
-      const attestations = (res.data!.attestations ?? []).map((a) => ({
+      const attestations = (res.data?.attestations ?? []).map((a) => ({
         predicateType: a.predicateType,
         bundle: a.bundle,
       }));

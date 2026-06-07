@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] -- 2026-06-07
+
+Hardening pass over the tool surface from a full-pass review: input validation on the write/bulk handlers, output-contract fixes, and test-suite robustness.
+
+### Fixed
+- `npm_dist_tag_set` pre-flights the packument and returns a 404 (with the published-version list) when the target version does not exist, instead of PUTting a tag at a nonexistent version. It was the only write handler that skipped the packument pre-flight.
+- `npm_token_revoke` validates the token key (rejects empty/malformed) before the DELETE, so passing the token value instead of its UUID key no longer silently targets the wrong resource.
+- `npm_team_grant` / `npm_team_revoke` validate the `package` field before building the request -- previously the only package-accepting handlers with no validation guard in the call path.
+- `npm_downloads_bulk` and `npm_compare` validate every package name up front and return a clean 400 naming the offender, instead of throwing inside `encPkg` and surfacing a raw error at the MCP boundary.
+- `npm_owner_remove` matches usernames case-insensitively; a caller passing `Bob` against a stored `bob` no longer gets a misleading 404.
+- The packument GET-mutate-PUT flows (`npm_deprecate`, `npm_undeprecate`, `npm_owner_add`, `npm_owner_remove`) retry once on a 409 `_rev` conflict (CouchDB optimistic-concurrency), so a concurrent write no longer hard-fails a retryable conflict.
+- `npm_unpublish_version` skips the tarball DELETE when the tarball origin does not match the configured registry origin, instead of misrouting the DELETE to the wrong host under proxy registries (Verdaccio/Nexus in proxy mode).
+- `npm_check_auth` / `npm_publish_preflight` report a distinct `fetch-failed` 2FA state when the profile fetch fails, instead of rendering "2FA is enabled (unknown)" -- which implied confirmed 2FA when the real cause was a token lacking read on `/-/npm/v1/user`.
+- `npm_provenance` rejects an empty/whitespace version with a 400 before the registry call.
+- `npm_package_access` surfaces both endpoint errors when `/access` and `/collaborators` both fail, instead of reporting only the collaborators error and hiding the real root cause.
+- `npm_health` stays well-defined for a partially-written packument (`dist-tags.latest` present but its version doc absent).
+- `build.mjs` guards the `package.json` read with an actionable error instead of an unhandled exception.
+
+### Changed
+- `npm_recent_changes`: the `totalPackages` response field is renamed to `registryPackageCount`. It holds the registry-wide doc count (~3M from `replicate.npmjs.com`), not the per-call `changes.length`, and the old name read as if it were a per-call count. **Consumers reading `totalPackages` must update to `registryPackageCount`.**
+- `npm_recent_changes`: the `idempotentHint` annotation is corrected to `false` -- it serves a live changes feed, so MCP clients must not cache or de-duplicate repeated calls.
+- `npm_access_set`: `access: "private"` now maps to the registry wire value `"restricted"` rather than being passed through verbatim (the registry uses `public`/`restricted`).
+- `npm_provenance`: predicate-type detection tightened from substring to prefix match, and the description reworded to make clear the tool **retrieves** attestations -- it does not cryptographically verify signatures, certificate chains, or Rekor entries.
+- `npm_org_member_set` now requires `confirm: true`, matching `npm_org_member_remove`.
+- `npm_compare` / `npm_health` carry the deprecation message string when a package is deprecated, instead of collapsing it to a boolean.
+- `npm_trusted_publishers` tolerates a string-or-object `workflow_ref` / `ci_config_ref_uri`, surfacing the raw string instead of silently yielding `undefined`.
+
+### Added
+- `npm_tokens` surfaces each token's `type` and `automation` flag, so callers can distinguish automation tokens (which bypass 2FA) from granular/legacy ones -- the distinction the tool description already promised.
+- `npm_check_auth` / `npm_publish_preflight` fire their independent auth reads (whoami / profile / tokens) concurrently rather than serially.
+
+### Documentation
+- Description fixes: `npm_deprecate` empty-message wording, enumerated download `period` values, consistent org-name `@`-prefix wording, `npm_dep_tree` depth semantics (depth counts the root), and named staleness constants in `npm_health`.
+- ASCII-normalized the `missing _rev` error strings (were a mix of em-dash and `--`).
+
+### Tests
+- `mockFetchSequence` throws on over-run instead of silently replaying the last canned response, which had masked spurious extra-request regressions across the write suite. Tightened write/semver assertions, derived the total tool-count check from the per-module sums, and added an `npm_token_revoke` malformed-key negative test. 739 passing.
+- Internal: `Packument` `dist-tags` / `maintainers` typed optional to match the defensive runtime guards.
+
 ## [0.12.0] -- 2026-06-04
 
 ### Fixed

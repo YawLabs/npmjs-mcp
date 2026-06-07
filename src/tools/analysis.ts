@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { type ApiResponse, downloadsGet, encPkg, registryGet, registryPost } from "../api.js";
+import { type ApiResponse, downloadsGet, encPkg, registryGet, registryPost, validatePackageName } from "../api.js";
 import { translateError } from "../errors.js";
 import type { Packument } from "../types.js";
 
@@ -26,6 +26,13 @@ export const analysisTools = [
       packages: z.array(z.string()).min(2).max(5).describe("Package names to compare"),
     }),
     handler: async (input: { packages: string[] }) => {
+      // Validate all names before the fan-out so a malformed name returns a
+      // clean 400 rather than an uncaught throw from encPkg inside Promise.all.
+      for (const pkg of input.packages) {
+        const nameErr = validatePackageName(pkg);
+        if (nameErr) return { ok: false, status: 400, error: nameErr };
+      }
+
       // Step 1: fetch packument + downloads per package in parallel.
       const partials = await Promise.all(
         input.packages.map(async (name) => {
@@ -100,9 +107,11 @@ export const analysisTools = [
           // ok:true with no data (api.ts), and dlRes.data!.downloads would throw
           // and crash the whole compare. Degrade to null instead.
           weeklyDownloads: dlRes.ok && dlRes.data ? dlRes.data.downloads : null,
+          // versionCount includes ALL published versions (stable + pre-releases).
           versionCount: versionKeys.length,
           created: pkg.time.created,
           lastPublish: latest ? pkg.time[latest] : undefined,
+          // `deprecated` is false when not deprecated, or the message string when deprecated.
           deprecated: latestVersion?.deprecated ?? false,
           hasReadme: !!(pkg.readme && pkg.readme.length > 0),
           repository: pkg.repository,
@@ -140,6 +149,11 @@ export const analysisTools = [
 
       const pkg = pkgRes.data!;
       const latest = pkg["dist-tags"]?.latest;
+      // `latestVersion` may be undefined when `latest` exists in dist-tags but
+      // the corresponding entry is absent from `versions` (partially-written
+      // packument). All downstream reads use optional chaining, so this is
+      // safe: daysSinceLastPublish derives from versionKeys (not from latest
+      // directly), and isDeprecated/license use `latestVersion?.field`.
       const latestVersion = latest ? pkg.versions[latest] : undefined;
       const versionKeys = Object.keys(pkg.versions);
 
@@ -185,13 +199,23 @@ export const analysisTools = [
         avgDaysBetweenReleases = Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length);
       }
 
+      // Thresholds for the assessment verdict (days since last publish).
+      // STALE_DAYS: no publish in this window -> "STALE".
+      // ACTIVE_DAYS: published within this window -> "ACTIVE".
+      const STALE_DAYS = 365;
+      const ACTIVE_DAYS = 90;
+
       // Score components
       const hasLicense = !!(pkg.license ?? latestVersion?.license);
       const hasReadme = !!(pkg.readme && pkg.readme.length > 0);
       const hasRepo = !!pkg.repository;
       const hasHomepage = !!pkg.homepage;
       const isDeprecated = !!latestVersion?.deprecated;
-      const isStale = daysSinceLastPublish !== null && daysSinceLastPublish > 365;
+      // `deprecatedMessage` is the message string when deprecated, false when not.
+      // Kept separate from the boolean `isDeprecated` so the assessment logic
+      // stays a clean boolean gate while consumers can read the actual message.
+      const deprecatedMessage: string | false = latestVersion?.deprecated ?? false;
+      const isStale = daysSinceLastPublish !== null && daysSinceLastPublish > STALE_DAYS;
 
       return {
         ok: true,
@@ -205,6 +229,7 @@ export const analysisTools = [
             weeklyDownloads: dlWeekRes.ok && dlWeekRes.data ? dlWeekRes.data.downloads : null,
             monthlyDownloads: dlMonthRes.ok && dlMonthRes.data ? dlMonthRes.data.downloads : null,
             maintainerCount: pkg.maintainers?.length ?? 0,
+            // versionCount includes ALL published versions (stable + pre-releases).
             versionCount: versionKeys.length,
             daysSinceLastPublish,
             avgDaysBetweenReleases,
@@ -214,7 +239,8 @@ export const analysisTools = [
             hasReadme,
             hasRepo,
             hasHomepage,
-            isDeprecated,
+            // `isDeprecated` is false when not deprecated, or the message string when deprecated.
+            isDeprecated: deprecatedMessage,
             isStale,
           },
           // Holistic single-string verdict layered priority-first: a deprecated
@@ -232,7 +258,7 @@ export const analysisTools = [
                 ? "AUDIT_UNKNOWN"
                 : isStale
                   ? "STALE"
-                  : daysSinceLastPublish !== null && daysSinceLastPublish < 90
+                  : daysSinceLastPublish !== null && daysSinceLastPublish < ACTIVE_DAYS
                     ? "ACTIVE"
                     : "MAINTENANCE",
         },
@@ -325,6 +351,7 @@ export const analysisTools = [
         status: 200,
         data: {
           name: pkg.name,
+          // totalVersions includes ALL published versions (stable + pre-releases).
           totalVersions: Object.keys(pkg.versions).length,
           analyzed: releases.length,
           created: pkg.time.created,

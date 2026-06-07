@@ -9,7 +9,13 @@
 import { build } from "esbuild";
 import { readFileSync } from "node:fs";
 
-const pkg = JSON.parse(readFileSync("package.json", "utf-8"));
+let pkg;
+try {
+  pkg = JSON.parse(readFileSync("package.json", "utf-8"));
+} catch {
+  console.error("Could not read package.json -- run build.mjs from the repo root");
+  process.exit(1);
+}
 
 await build({
   entryPoints: ["src/index.ts"],

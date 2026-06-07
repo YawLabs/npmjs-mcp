@@ -16,11 +16,13 @@ import {
   encTag,
   encTeam,
   encUser,
+  maxSatisfying,
   registryDeleteAuth,
   registryGetAuth,
   registryPostAuth,
   registryPutAuth,
   requireAuth,
+  validatePackageName,
   validateScope,
   validateTag,
   validateTeam,
@@ -57,21 +59,15 @@ function parseTeamTarget(target: string): { scope: string; team: string } | { er
 }
 
 /**
- * Highest stable semver in the list (loose compare). Returns null if no stable
- * version exists. Used to recompute `dist-tags.latest` after unpublish — npm
- * convention is that `latest` should never point at a prerelease, so prereleases
- * (anything containing `-`) are excluded from the candidate set.
+ * Highest stable semver in the list. Returns null if no stable version exists.
+ * Used to recompute `dist-tags.latest` after unpublish -- npm convention is that
+ * `latest` should never point at a prerelease, so only stable versions (no `-`)
+ * are candidates. Delegates to maxSatisfying with range "*", which already
+ * excludes prereleases when no prerelease anchor is present in the range.
  */
 function highestVersion(versions: string[]): string | null {
-  const parsed: Array<[number, number, number, string]> = [];
-  for (const v of versions) {
-    if (v.includes("-")) continue;
-    const m = v.match(/^(\d+)\.(\d+)\.(\d+)/);
-    if (m) parsed.push([Number(m[1]), Number(m[2]), Number(m[3]), v]);
-  }
-  if (parsed.length === 0) return null;
-  parsed.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
-  return parsed[parsed.length - 1][3];
+  const stable = versions.filter((v) => !v.includes("-"));
+  return maxSatisfying(stable, "*");
 }
 
 // ─── Tools ──────────────────────────────────────────────
@@ -99,7 +95,7 @@ export const writeTools = [
       name: z.string().describe("Package name (e.g. '@yawlabs/spend')"),
       message: z
         .string()
-        .describe("Deprecation message. Empty string to clear deprecation (use npm_undeprecate instead)."),
+        .describe("Deprecation message. Use npm_undeprecate to clear."),
       versionRange: z
         .string()
         .optional()
@@ -116,56 +112,71 @@ export const writeTools = [
       const problem = validateDeprecationMessage(input.message);
       if (problem) return { ok: false, status: 400, error: problem };
 
-      const pRes = await fetchPackument(input.name);
-      if (!pRes.ok) return translateError(pRes, { pkg: input.name, op: "deprecate (fetch)" });
-
-      const packument = pRes.data as Packument;
-      const allVersions = Object.keys(packument.versions || {});
       const range = input.versionRange ?? "*";
-      const affected = versionsSatisfying(allVersions, range);
 
-      if (affected.length === 0) {
+      // CouchDB OCC: on a 409 conflict, re-fetch the packument and retry once.
+      for (let attempt = 0; attempt <= 1; attempt++) {
+        const pRes = await fetchPackument(input.name);
+        if (!pRes.ok) return translateError(pRes, { pkg: input.name, op: "deprecate (fetch)" });
+
+        const packument = pRes.data as Packument;
+        const allVersions = Object.keys(packument.versions || {});
+        const affected = versionsSatisfying(allVersions, range);
+
+        if (affected.length === 0) {
+          return {
+            ok: false,
+            status: 400,
+            error:
+              `No versions match range '${range}' for ${input.name}. ` +
+              `Published versions: ${allVersions.join(", ") || "(none)"}.`,
+          };
+        }
+
+        if (!packument._rev) {
+          return {
+            ok: false,
+            status: 500,
+            error: `Packument for ${input.name} missing _rev -- cannot deprecate. Try again; this is usually transient.`,
+          };
+        }
+
+        for (const v of affected) {
+          packument.versions[v].deprecated = input.message;
+        }
+
+        // Couch metadata must not be echoed back -- mirrors the unpublish flow.
+        delete packument._revisions;
+        delete packument._attachments;
+
+        // We PUT the full packument here, not a minimal body. The registry accepts
+        // this and correctly merges the updated `deprecated` fields. A minimal-body
+        // PUT (only `_id`, `_rev`, `versions`) is the future optimization but is
+        // not used here to keep the logic identical to the undeprecate/owner flows.
+        const putRes = await registryPutAuth(
+          `/${encPkg(input.name)}/-rev/${encodeURIComponent(packument._rev)}`,
+          packument,
+        );
+
+        // 409 = CouchDB OCC conflict (a concurrent write beat us). Re-fetch and
+        // re-apply the mutation on the next iteration. Only one retry.
+        if (putRes.status === 409 && attempt === 0) continue;
+        if (!putRes.ok) return translateError(putRes, { pkg: input.name, op: "deprecate (write)" });
+
         return {
-          ok: false,
-          status: 400,
-          error:
-            `No versions match range '${range}' for ${input.name}. ` +
-            `Published versions: ${allVersions.join(", ") || "(none)"}.`,
+          ok: true,
+          status: 200,
+          data: {
+            package: input.name,
+            affectedVersions: affected,
+            totalAffected: affected.length,
+            message: input.message,
+          },
         };
       }
 
-      for (const v of affected) {
-        packument.versions[v].deprecated = input.message;
-      }
-
-      if (!packument._rev) {
-        return {
-          ok: false,
-          status: 500,
-          error: `Packument for ${input.name} missing _rev -- cannot deprecate. Try again; this is usually transient.`,
-        };
-      }
-
-      // Couch metadata must not be echoed back -- mirrors the unpublish flow.
-      delete packument._revisions;
-      delete packument._attachments;
-
-      const putRes = await registryPutAuth(
-        `/${encPkg(input.name)}/-rev/${encodeURIComponent(packument._rev)}`,
-        packument,
-      );
-      if (!putRes.ok) return translateError(putRes, { pkg: input.name, op: "deprecate (write)" });
-
-      return {
-        ok: true,
-        status: 200,
-        data: {
-          package: input.name,
-          affectedVersions: affected,
-          totalAffected: affected.length,
-          message: input.message,
-        },
-      };
+      // Unreachable -- loop always returns or continues within bounds.
+      return { ok: false, status: 409, error: "Conflict after OCC retry -- try again." };
     },
   },
 
@@ -224,6 +235,8 @@ export const writeTools = [
       delete packument._revisions;
       delete packument._attachments;
 
+      // Full packument PUT -- intentional, matches deprecate. Minimal-body PUT
+      // (only _id/_rev/versions) is the future optimization; not applied here.
       const putRes = await registryPutAuth(
         `/${encPkg(input.name)}/-rev/${encodeURIComponent(packument._rev)}`,
         packument,
@@ -310,18 +323,21 @@ export const writeTools = [
         return {
           ok: false,
           status: 500,
-          error: `Packument for ${input.name} missing _rev — cannot unpublish. Try again; this is usually transient.`,
+          error: `Packument for ${input.name} missing _rev -- cannot unpublish. Try again; this is usually transient.`,
         };
       }
 
       const tarballUrl = versionData.dist?.tarball;
-      const latestBefore = packument["dist-tags"]?.latest;
+      const distTags = packument["dist-tags"] || {};
+      const latestBefore = distTags.latest;
 
-      // Remove the version and any dist-tags pointing at it.
+      // Remove the version and any dist-tags pointing at it. `distTags` aliases
+      // packument["dist-tags"] when present, so deletes mutate the real object;
+      // when absent it is a throwaway {} and the deletes are harmless no-ops.
       delete packument.versions[input.version];
-      for (const tag of Object.keys(packument["dist-tags"] || {})) {
-        if (packument["dist-tags"][tag] === input.version) {
-          delete packument["dist-tags"][tag];
+      for (const tag of Object.keys(distTags)) {
+        if (distTags[tag] === input.version) {
+          delete distTags[tag];
         }
       }
 
@@ -355,10 +371,20 @@ export const writeTools = [
         const freshRev = freshRes.ok ? (freshRes.data as Packument)._rev : undefined;
         if (freshRev) {
           try {
-            const pathname = new URL(tarballUrl).pathname;
-            const delRes = await registryDeleteAuth(`${pathname}/-rev/${encodeURIComponent(freshRev)}`);
-            tarballDeleted = delRes.ok;
-            if (!delRes.ok) tarballError = delRes.error;
+            const tarballParsed = new URL(tarballUrl);
+            const registryOrigin = new URL(
+              (process.env.NPM_REGISTRY || "https://registry.npmjs.org").replace(/\/+$/, ""),
+            ).origin;
+            // Under proxy registries the tarball URL may point at a different
+            // host. DELETEing to the wrong origin would be a no-op at best
+            // and destructive at worst -- skip and surface a warning instead.
+            if (tarballParsed.origin !== registryOrigin) {
+              tarballError = `tarball origin ${tarballParsed.origin} does not match registry origin ${registryOrigin} -- tarball DELETE skipped`;
+            } else {
+              const delRes = await registryDeleteAuth(`${tarballParsed.pathname}/-rev/${encodeURIComponent(freshRev)}`);
+              tarballDeleted = delRes.ok;
+              if (!delRes.ok) tarballError = delRes.error;
+            }
           } catch (err) {
             tarballError = err instanceof Error ? err.message : String(err);
           }
@@ -431,7 +457,7 @@ export const writeTools = [
         return {
           ok: false,
           status: 500,
-          error: `Packument for ${input.name} missing _rev — cannot unpublish.`,
+          error: `Packument for ${input.name} missing _rev -- cannot unpublish.`,
         };
       }
 
@@ -473,6 +499,20 @@ export const writeTools = [
 
       const tagErr = validateTag(input.tag);
       if (tagErr) return { ok: false, status: 400, error: tagErr };
+
+      // Pre-flight: verify the target version exists before pointing the tag at it.
+      const pRes = await fetchPackument(input.name);
+      if (!pRes.ok) return translateError(pRes, { pkg: input.name, op: `dist-tag set ${input.tag} (fetch)` });
+      const packument = pRes.data as Packument;
+      if (!packument.versions?.[input.version]) {
+        return {
+          ok: false,
+          status: 404,
+          error:
+            `Version ${input.version} not found for ${input.name}. ` +
+            `Published versions: ${Object.keys(packument.versions || {}).join(", ")}.`,
+        };
+      }
 
       // Registry expects a JSON string as the body. Passing input.version
       // (already a string) through registryPutAuth's JSON.stringify yields
@@ -598,7 +638,7 @@ export const writeTools = [
         return {
           ok: false,
           status: 500,
-          error: `Packument for ${input.name} missing _rev — cannot update owners.`,
+          error: `Packument for ${input.name} missing _rev -- cannot update owners.`,
         };
       }
 
@@ -654,7 +694,7 @@ export const writeTools = [
       const packument = pRes.data as Packument;
       const before = packument.maintainers || [];
 
-      if (!before.some((m) => m.name === input.username)) {
+      if (!before.some((m) => m.name.toLowerCase() === input.username.toLowerCase())) {
         return {
           ok: false,
           status: 404,
@@ -664,7 +704,7 @@ export const writeTools = [
         };
       }
 
-      const after = before.filter((m) => m.name !== input.username);
+      const after = before.filter((m) => m.name.toLowerCase() !== input.username.toLowerCase());
 
       if (after.length === 0) {
         return {
@@ -678,7 +718,7 @@ export const writeTools = [
         return {
           ok: false,
           status: 500,
-          error: `Packument for ${input.name} missing _rev — cannot update owners.`,
+          error: `Packument for ${input.name} missing _rev -- cannot update owners.`,
         };
       }
 
@@ -707,8 +747,9 @@ export const writeTools = [
   {
     name: "npm_access_set",
     description:
-      "Set package access level: 'public', 'private', or 'restricted'. Unscoped packages are always public. " +
-      "Private access requires a paid npm account.",
+      "Set package access level: 'public' or 'restricted' (private). 'private' is accepted as an alias " +
+      "for 'restricted' for ergonomics -- both map to the registry wire value 'restricted'. " +
+      "Unscoped packages are always public. Restricted access requires a paid npm account.",
     annotations: {
       title: "Set package access level",
       readOnlyHint: false,
@@ -718,19 +759,23 @@ export const writeTools = [
     },
     inputSchema: z.object({
       name: z.string().describe("Package name"),
-      access: z.enum(["public", "private", "restricted"]).describe("Access level"),
+      access: z.enum(["public", "private", "restricted"]).describe("Access level ('private' maps to 'restricted' on the wire)"),
     }),
     handler: async (input: { name: string; access: "public" | "private" | "restricted" }) => {
       const authErr = requireAuth();
       if (authErr) return authErr;
 
-      const res = await registryPostAuth(`/-/package/${encPkg(input.name)}/access`, { access: input.access });
+      // The npm registry wire values are "public" and "restricted". We accept
+      // "private" as an ergonomic alias and map it to "restricted" before posting.
+      const wireAccess = input.access === "private" ? "restricted" : input.access;
+
+      const res = await registryPostAuth(`/-/package/${encPkg(input.name)}/access`, { access: wireAccess });
       if (!res.ok) return translateError(res, { pkg: input.name, op: `access_set ${input.access}` });
 
       return {
         ok: true,
         status: 200,
-        data: { package: input.name, access: input.access },
+        data: { package: input.name, access: wireAccess },
       };
     },
   },
@@ -758,6 +803,9 @@ export const writeTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
+      // Field names mirror libnpmaccess source (not public API docs):
+      // `publish_requires_tfa` and `automation_token_overrides_tfa` are the
+      // exact keys the registry access endpoint expects.
       let body: Record<string, boolean>;
       if (input.level === "none") {
         body = { publish_requires_tfa: false };
@@ -795,12 +843,19 @@ export const writeTools = [
     },
     inputSchema: z.object({
       team: z.string().describe("Team in the form '@scope:team' (e.g. '@yawlabs:devs')"),
-      package: z.string().describe("Package name"),
+      package: z
+        .string()
+        .describe(
+          "Package name. Field is named 'package' to match the npm CLI (diverges from 'name' used elsewhere in this server).",
+        ),
       permissions: z.enum(["read-only", "read-write"]).describe("Permission level"),
     }),
     handler: async (input: { team: string; package: string; permissions: "read-only" | "read-write" }) => {
       const authErr = requireAuth();
       if (authErr) return authErr;
+
+      const pkgErr = validatePackageName(input.package);
+      if (pkgErr) return { ok: false, status: 400, error: pkgErr };
 
       const parsed = parseTeamTarget(input.team);
       if ("error" in parsed) {
@@ -839,11 +894,18 @@ export const writeTools = [
     },
     inputSchema: z.object({
       team: z.string().describe("Team in the form '@scope:team'"),
-      package: z.string().describe("Package name"),
+      package: z
+        .string()
+        .describe(
+          "Package name. Field is named 'package' to match the npm CLI (diverges from 'name' used elsewhere in this server).",
+        ),
     }),
     handler: async (input: { team: string; package: string }) => {
       const authErr = requireAuth();
       if (authErr) return authErr;
+
+      const pkgErr = validatePackageName(input.package);
+      if (pkgErr) return { ok: false, status: 400, error: pkgErr };
 
       const parsed = parseTeamTarget(input.team);
       if ("error" in parsed) {
@@ -1044,28 +1106,40 @@ export const writeTools = [
       org: z.string().describe("Organization name (with or without leading @)"),
       user: z.string().describe("npm username"),
       role: z.enum(["developer", "admin", "owner"]).optional().describe("Role to assign"),
+      confirm: z.literal(true).describe("Must be literally true. Guards against accidental org membership changes."),
     }),
-    handler: async (input: { org: string; user: string; role?: "developer" | "admin" | "owner" }) => {
+    handler: async (input: { org: string; user: string; role?: "developer" | "admin" | "owner"; confirm: true }) => {
       const authErr = requireAuth();
       if (authErr) return authErr;
+
+      if (input.confirm !== true) {
+        return {
+          ok: false,
+          status: 400,
+          error: "org_member_set requires confirm: true. This adds or changes a user's org role.",
+        };
+      }
 
       const orgErr = validateScope(input.org);
       if (orgErr) return { ok: false, status: 400, error: orgErr };
       const userErr = validateUsername(input.user);
       if (userErr) return { ok: false, status: 400, error: userErr };
 
-      const org = input.org.replace(/^@/, "");
-      const user = input.user.replace(/^@/, "");
-      const body: { user: string; role?: string } = { user };
+      // encScope strips the leading '@' internally -- pass input.org directly
+      // to encScope for the URL rather than stripping manually first.
+      // The body `user` field and response data still strip '@' for clean output.
+      const userBare = input.user.replace(/^@/, "");
+      const orgBare = input.org.replace(/^@/, "");
+      const body: { user: string; role?: string } = { user: userBare };
       if (input.role) body.role = input.role;
 
-      const res = await registryPutAuth(`/-/org/${encScope(org)}/user`, body);
-      if (!res.ok) return translateError(res, { op: `org_member_set ${org}/${user}` });
+      const res = await registryPutAuth(`/-/org/${encScope(input.org)}/user`, body);
+      if (!res.ok) return translateError(res, { op: `org_member_set ${orgBare}/${userBare}` });
 
-      // Only include role in the response when it was explicitly set — omitting
+      // Only include role in the response when it was explicitly set -- omitting
       // `role` means "keep existing role", and the server-side value is not
       // echoed in the PUT response, so we cannot accurately report it.
-      const data: Record<string, unknown> = { org, user };
+      const data: Record<string, unknown> = { org: orgBare, user: userBare };
       if (input.role) data.role = input.role;
       return { ok: true, status: 200, data };
     },
@@ -1108,12 +1182,14 @@ export const writeTools = [
       const userErr = validateUsername(input.user);
       if (userErr) return { ok: false, status: 400, error: userErr };
 
-      const org = input.org.replace(/^@/, "");
-      const user = input.user.replace(/^@/, "");
-      const res = await registryDeleteAuth(`/-/org/${encScope(org)}/user`, { user });
-      if (!res.ok) return translateError(res, { op: `org_member_remove ${org}/${user}` });
+      // encScope strips '@' internally -- pass input.org directly to encScope.
+      // The body and response data still strip '@' for clean output.
+      const orgBare = input.org.replace(/^@/, "");
+      const userBare = input.user.replace(/^@/, "");
+      const res = await registryDeleteAuth(`/-/org/${encScope(input.org)}/user`, { user: userBare });
+      if (!res.ok) return translateError(res, { op: `org_member_remove ${orgBare}/${userBare}` });
 
-      return { ok: true, status: 200, data: { org, removedUser: user } };
+      return { ok: true, status: 200, data: { org: orgBare, removedUser: userBare } };
     },
   },
 
@@ -1151,6 +1227,16 @@ export const writeTools = [
           ok: false,
           status: 400,
           error: "token_revoke requires confirm: true. Revoking the token in NPM_TOKEN will break the next call.",
+        };
+      }
+
+      // Reject empty or obviously-wrong keys before hitting the network.
+      // Token keys are UUIDs (hex + dashes, 8+ chars).
+      if (!input.tokenKey || !/^[0-9a-f-]{8,}$/i.test(input.tokenKey)) {
+        return {
+          ok: false,
+          status: 400,
+          error: `Invalid token key '${input.tokenKey}'. Expected a UUID (hex characters and dashes, at least 8 characters). Use npm_tokens to list valid keys.`,
         };
       }
 

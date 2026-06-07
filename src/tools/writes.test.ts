@@ -42,7 +42,8 @@ function mockFetchSequence(responses: Array<{ status: number; body: unknown }>) 
     lastRequest = { url, method, headers, body };
     requests.push(lastRequest);
 
-    const response = responses[Math.min(i, responses.length - 1)];
+    const response = responses[i];
+    if (!response) throw new Error(`mockFetchSequence over-run: request ${i} to ${url}`);
     i++;
     if (response.status === 204) {
       return new Response(null, { status: 204, headers: { "content-length": "0" } });
@@ -327,6 +328,32 @@ describe("npm_deprecate", () => {
     assert.equal(requests[0].method, "GET");
   });
 
+  // ─── W8: 409-retry on CouchDB OCC conflict ───
+  it("retries once on 409 from PUT (CouchDB OCC): re-fetches and re-applies mutation", async () => {
+    const pkg1 = samplePackument({ _rev: "1-abc" });
+    const pkg2 = samplePackument({ _rev: "2-def" });
+    mockFetchSequence([
+      { status: 200, body: pkg1 }, // initial GET
+      { status: 409, body: { error: "Conflict" } }, // PUT conflicts (OCC)
+      { status: 200, body: pkg2 }, // retry GET with fresh rev
+      { status: 200, body: {} }, // retry PUT succeeds
+    ]);
+    const tool = findTool(writeTools, "npm_deprecate");
+    const result = (await tool.handler({
+      name: "@test/pkg",
+      message: "deprecated -- use newpkg",
+    })) as { ok: boolean; data: { affectedVersions: string[] } };
+    assert.equal(result.ok, true);
+    assert.equal(requests.length, 4);
+    assert.equal(requests[0].method, "GET");
+    assert.equal(requests[1].method, "PUT");
+    assert.equal(requests[2].method, "GET"); // re-fetch on conflict
+    assert.equal(requests[3].method, "PUT");
+    // The retry PUT must use the fresh rev (2-def), not the stale rev (1-abc).
+    assert.match(requests[3].url, /\/-rev\/2-def$/);
+    assert.equal(result.data.affectedVersions.length, 3);
+  });
+
   // ─── GAP 3: the PUT write-step (not just the GET) translates a 422 ───
   it("translates a 422 from the PUT write-step into actionable error", async () => {
     // GET returns a valid packument with _rev; the PUT then 422s. The handler
@@ -355,8 +382,15 @@ describe("npm_deprecate", () => {
 
 describe("npm_undeprecate", () => {
   it("clears deprecation on all versions", async () => {
+    const pkg = samplePackument({
+      versions: {
+        "0.1.0": { name: "@test/pkg", version: "0.1.0", deprecated: "old" },
+        "0.2.0": { name: "@test/pkg", version: "0.2.0", deprecated: "old" },
+        "1.0.0": { name: "@test/pkg", version: "1.0.0", deprecated: "old" },
+      },
+    });
     mockFetchSequence([
-      { status: 200, body: samplePackument() },
+      { status: 200, body: pkg },
       { status: 200, body: {} },
     ]);
     const tool = findTool(writeTools, "npm_undeprecate");
@@ -366,6 +400,14 @@ describe("npm_undeprecate", () => {
     };
     assert.equal(result.ok, true);
     assert.equal(result.data.totalAffected, 3);
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].method, "GET");
+    assert.equal(requests[1].method, "PUT");
+    // All versions must have deprecated cleared to "" in the PUT body.
+    const putBody = requests[1].body as { versions: Record<string, { deprecated?: string }> };
+    for (const v of ["0.1.0", "0.2.0", "1.0.0"]) {
+      assert.equal(putBody.versions[v].deprecated, "");
+    }
   });
 });
 
@@ -644,14 +686,15 @@ describe("npm_unpublish_package", () => {
 // ─── npm_access_set + npm_access_set_mfa ───
 
 describe("npm_access_set", () => {
-  it("POSTs to /-/package/<pkg>/access with access level", async () => {
+  it("POSTs to /-/package/<pkg>/access with access level, mapping 'private' to 'restricted' on the wire", async () => {
     mockFetch(200, {});
     const tool = findTool(writeTools, "npm_access_set");
     const result = (await tool.handler({ name: "@test/pkg", access: "private" })) as { ok: boolean };
     assert.equal(result.ok, true);
     assert.equal(lastRequest!.method, "POST");
     assert.match(lastRequest!.url, /\/-\/package\/@test%2Fpkg\/access$/);
-    assert.deepEqual(lastRequest!.body, { access: "private" });
+    // "private" maps to "restricted" on the wire (W4).
+    assert.deepEqual(lastRequest!.body, { access: "restricted" });
   });
 });
 
@@ -779,7 +822,7 @@ describe("npm_org_member_set", () => {
   it("PUTs /-/org/<org>/user with user + role body", async () => {
     mockFetch(200, {});
     const tool = findTool(writeTools, "npm_org_member_set");
-    await tool.handler({ org: "@yawlabs", user: "bob", role: "developer" });
+    await tool.handler({ org: "@yawlabs", user: "bob", role: "developer", confirm: true });
     assert.equal(lastRequest!.method, "PUT");
     assert.match(lastRequest!.url, /\/-\/org\/yawlabs\/user$/);
     assert.deepEqual(lastRequest!.body, { user: "bob", role: "developer" });
@@ -788,14 +831,14 @@ describe("npm_org_member_set", () => {
   it("strips leading @ from org and user", async () => {
     mockFetch(200, {});
     const tool = findTool(writeTools, "npm_org_member_set");
-    await tool.handler({ org: "yawlabs", user: "@bob" });
+    await tool.handler({ org: "yawlabs", user: "@bob", confirm: true });
     assert.deepEqual(lastRequest!.body, { user: "bob" });
   });
 
   it("response includes role when it was set", async () => {
     mockFetch(200, {});
     const tool = findTool(writeTools, "npm_org_member_set");
-    const result = (await tool.handler({ org: "yawlabs", user: "bob", role: "admin" })) as {
+    const result = (await tool.handler({ org: "yawlabs", user: "bob", role: "admin", confirm: true })) as {
       data: Record<string, unknown>;
     };
     assert.equal(result.data.role, "admin");
@@ -804,10 +847,25 @@ describe("npm_org_member_set", () => {
   it("response omits role when it was not set (server keeps existing role)", async () => {
     mockFetch(200, {});
     const tool = findTool(writeTools, "npm_org_member_set");
-    const result = (await tool.handler({ org: "yawlabs", user: "bob" })) as { data: Record<string, unknown> };
+    const result = (await tool.handler({ org: "yawlabs", user: "bob", confirm: true })) as {
+      data: Record<string, unknown>;
+    };
     assert.ok(!("role" in result.data), "role should be omitted from data when not specified");
     assert.equal(result.data.org, "yawlabs");
     assert.equal(result.data.user, "bob");
+  });
+
+  it("requires confirm: true", async () => {
+    const tool = findTool(writeTools, "npm_org_member_set");
+    // biome-ignore lint/suspicious/noExplicitAny: deliberately bypassing types to test runtime guard
+    const result = (await (tool.handler as any)({
+      org: "yawlabs",
+      user: "bob",
+      confirm: false,
+    })) as { ok: boolean; status: number; error: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.match(result.error, /confirm: true/);
   });
 });
 
@@ -852,21 +910,34 @@ describe("npm_token_revoke", () => {
   it("DELETEs /-/npm/v1/tokens/token/<key>", async () => {
     mockFetch(200, {});
     const tool = findTool(writeTools, "npm_token_revoke");
-    await tool.handler({ tokenKey: "abc-123", confirm: true });
+    await tool.handler({ tokenKey: "a1b2c3d4-e5f6-7890", confirm: true });
     assert.equal(lastRequest!.method, "DELETE");
-    assert.match(lastRequest!.url, /\/-\/npm\/v1\/tokens\/token\/abc-123$/);
+    assert.match(lastRequest!.url, /\/-\/npm\/v1\/tokens\/token\/a1b2c3d4-e5f6-7890$/);
   });
 
   it("requires confirm: true", async () => {
     const tool = findTool(writeTools, "npm_token_revoke");
     // biome-ignore lint/suspicious/noExplicitAny: deliberately bypassing types to test runtime guard
     const result = (await (tool.handler as any)({
-      tokenKey: "abc-123",
+      tokenKey: "a1b2c3d4-e5f6-7890",
       confirm: false,
     })) as { ok: boolean; status: number; error: string };
     assert.equal(result.ok, false);
     assert.equal(result.status, 400);
     assert.match(result.error, /confirm: true/);
+  });
+
+  it("rejects a malformed tokenKey without hitting the network", async () => {
+    const tool = findTool(writeTools, "npm_token_revoke");
+    const result = (await tool.handler({ tokenKey: "abc-123", confirm: true })) as {
+      ok: boolean;
+      status: number;
+      error: string;
+    };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.match(result.error, /token key/i);
+    assert.equal(lastRequest, undefined);
   });
 });
 
@@ -874,7 +945,11 @@ describe("npm_token_revoke", () => {
 
 describe("npm_dist_tag_set", () => {
   it("PUTs version to /-/package/<pkg>/dist-tags/<tag>", async () => {
-    mockFetch(200, {});
+    // Pre-flight GET (W3) then PUT: must supply both responses.
+    mockFetchSequence([
+      { status: 200, body: samplePackument() },
+      { status: 200, body: {} },
+    ]);
     const tool = findTool(writeTools, "npm_dist_tag_set");
     const result = (await tool.handler({
       name: "@test/pkg",
@@ -882,9 +957,12 @@ describe("npm_dist_tag_set", () => {
       version: "1.0.0",
     })) as { ok: boolean };
     assert.equal(result.ok, true);
-    assert.equal(lastRequest!.method, "PUT");
-    assert.match(lastRequest!.url, /\/dist-tags\/beta$/);
-    assert.equal(lastRequest!.body, "1.0.0");
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].method, "GET");
+    assert.equal(requests[1].method, "PUT");
+    assert.match(requests[1].url, /\/dist-tags\/beta$/);
+    // The wire body is a JSON string -- JSON.stringify("1.0.0") -> '"1.0.0"'
+    assert.equal(requests[1].body, "1.0.0");
   });
 
   it("rejects empty tag without hitting the network", async () => {
@@ -980,10 +1058,12 @@ describe("npm_owner_add", () => {
     const result = (await tool.handler({
       name: "@test/pkg",
       username: "alice",
-    })) as { ok: boolean; data: { alreadyOwner: boolean } };
+    })) as { ok: boolean; data: { alreadyOwner: boolean; maintainers: string[] } };
     assert.equal(result.ok, true);
     assert.equal(result.data.alreadyOwner, true);
     assert.equal(requests.filter((r) => r.method === "PUT").length, 0);
+    // Maintainers list must be exactly ["alice"] -- no duplication.
+    assert.deepEqual(result.data.maintainers, ["alice"]);
   });
 
   // ─── GAP 4: user-resolve step 404s for a nonexistent user (writes.ts:572-575) ───

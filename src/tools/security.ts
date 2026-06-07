@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { registryGet, registryPost } from "../api.js";
+import { registryGet, registryPost, validatePackageName } from "../api.js";
 import { translateError } from "../errors.js";
 
 export const securityTools = [
@@ -76,9 +76,15 @@ export const securityTools = [
         .describe('Dependencies to audit as { "package": "version" }, e.g. { "express": "4.17.1" }'),
     }),
     handler: async (input: { name: string; version?: string; dependencies: Record<string, string> }) => {
+      const nameErr = validatePackageName(input.name);
+      if (nameErr) return { ok: false as const, status: 400, error: nameErr };
+      const version = input.version ?? "1.0.0";
+      if (!version.trim()) {
+        return { ok: false as const, status: 400, error: "version must not be empty" };
+      }
       const body = {
         name: input.name,
-        version: input.version ?? "1.0.0",
+        version,
         requires: input.dependencies,
         dependencies: Object.fromEntries(
           Object.entries(input.dependencies).map(([pkg, ver]) => [pkg, { version: ver }]),

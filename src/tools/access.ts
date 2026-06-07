@@ -65,7 +65,13 @@ export const accessTools = [
       ]);
 
       // Need at least one successful response
-      if (!accessRes.ok && !collabRes.ok) return translateError(collabRes, { pkg: input.name, op: "package_access" });
+      if (!accessRes.ok && !collabRes.ok) {
+        return {
+          ok: false as const,
+          status: accessRes.status,
+          error: `Both package_access requests failed. access endpoint: HTTP ${accessRes.status}${accessRes.error ? ` (${accessRes.error})` : ""}; collaborators endpoint: HTTP ${collabRes.status}${collabRes.error ? ` (${collabRes.error})` : ""}.`,
+        };
+      }
 
       const result: Record<string, unknown> = {
         package: input.name,

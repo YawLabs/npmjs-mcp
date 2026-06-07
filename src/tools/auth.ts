@@ -113,6 +113,10 @@ export const authTools = [
           tokens: data.objects.map((t) => ({
             key: t.key,
             readonly: t.readonly,
+            // Surface token class + automation flag so callers can tell automation
+            // tokens (which bypass 2FA) from granular/legacy ones. Undefined drops out of JSON.
+            type: t.type,
+            automation: t.automation,
             cidrWhitelist: t.cidr_whitelist,
             created: t.created,
             updated: t.updated,

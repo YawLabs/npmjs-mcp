@@ -30,7 +30,7 @@ export const registryTools = [
       title: "Recent registry changes",
       readOnlyHint: true,
       destructiveHint: false,
-      idempotentHint: true,
+      idempotentHint: false,
       openWorldHint: true,
     },
     inputSchema: z.object({
@@ -63,13 +63,11 @@ export const registryTools = [
         ok: true,
         status: 200,
         data: {
-          // `totalPackages` is the registry doc-count from replicate.npmjs.com
-          // (the entire npm registry, ~3M) -- NOT the count of returned
-          // changes. `changes.length` is the per-call result size. The field
-          // name reads as if it were a per-call count; this comment pins the
-          // semantic so a consumer reading "totalPackages: 50" doesn't assume
-          // only 50 packages exist on the registry.
-          totalPackages: dbRes.data?.doc_count ?? null,
+          // `registryPackageCount` is the registry-wide doc-count from
+          // replicate.npmjs.com (the entire npm registry, ~3M) -- NOT the
+          // count of returned changes. `changes.length` is the per-call
+          // result size.
+          registryPackageCount: dbRes.data?.doc_count ?? null,
           changes,
         },
       };
@@ -106,7 +104,7 @@ export const registryTools = [
             tool: "mcp_tool: npm_deprecate",
             requiresNpmToken: true,
             messageFormat: {
-              preferred: "Renamed to @scope/pkg — install that instead",
+              preferred: "Renamed to @scope/pkg -- install that instead",
               avoid: "Renamed to @scope/pkg. Install that instead.",
               note: "Period-capital form has triggered 422 on at least one scoped package; use em-dash.",
             },

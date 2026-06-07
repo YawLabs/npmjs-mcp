@@ -55,7 +55,7 @@ export const dependencyTools = [
     inputSchema: z.object({
       name: z.string().describe("Package name"),
       version: z.string().optional().describe("Semver version or dist-tag (default: 'latest')"),
-      depth: z.number().min(1).max(5).optional().describe("Max tree depth (default 3, max 5)"),
+      depth: z.number().min(1).max(5).optional().describe("Max tree depth where the root counts as level 1 (default 3 = root + 2 transitive levels, max 5)"),
     }),
     handler: async (input: { name: string; version?: string; depth?: number }) => {
       const maxDepth = input.depth ?? 3;
@@ -95,7 +95,22 @@ export const dependencyTools = [
         // there are on the resulting promise).
         let pending = packumentCache.get(name);
         if (!pending) {
-          pending = runLimited(() => registryGetAbbreviated<AbbreviatedPackument>(`/${encPkg(name)}`)).then((res) => {
+          // Wrap encPkg in try/catch: a malformed transitive dep name (e.g. a
+          // registry entry with an invalid character) must not abort the whole
+          // tree. Record a failed node and continue, mirroring the fetch-failure
+          // path below.
+          let encodedName: string;
+          try {
+            encodedName = encPkg(name);
+          } catch {
+            warnings.push(`Invalid package name "${name}": skipped`);
+            if (!failedPackages.has(name)) {
+              failedPackages.add(name);
+              tree[hintKey] = { version: versionHint, dependencies: {}, failed: true };
+            }
+            return;
+          }
+          pending = runLimited(() => registryGetAbbreviated<AbbreviatedPackument>(`/${encodedName}`)).then((res) => {
             if (!res.ok) {
               warnings.push(`Failed to fetch ${name}: ${res.error}`);
               return null;
@@ -226,8 +241,12 @@ export const dependencyTools = [
       const depEntries = Object.entries(pkg.dependencies ?? {});
 
       // Fetch license info for direct deps with concurrency limit.
-      // Uses abbreviated packument to resolve the version range, then fetches
-      // the specific version doc for the license (not just "latest").
+      // Perf note: this is a 2N-fetch pattern per dependency -- one abbreviated
+      // packument to resolve the version range, then one version doc for the
+      // license field. This is intentional (avoids reading a stale "latest"
+      // license when the dep range resolves to an older version), but callers
+      // should be aware that a package with many direct deps will issue 2*N
+      // registry requests (bounded to 10 in-flight at a time by createLimiter).
       const runLimited = createLimiter(10);
 
       const depLicenses = await Promise.all(

@@ -124,7 +124,9 @@ describe("npm_hook_add", () => {
     mockFetch(200, { id: "h2" });
     const tool = findTool("npm_hook_add");
     await tool.handler({ target: "@yawlabs", endpoint: "https://example.com/h", secret: "s" });
-    assert.equal((lastRequest!.body as { type: string }).type, "scope");
+    const body = lastRequest!.body as { type: string; name: string };
+    assert.equal(body.type, "scope");
+    assert.equal(body.name, "@yawlabs");
   });
 
   it("classifies ~user as owner type and strips tilde", async () => {

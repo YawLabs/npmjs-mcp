@@ -5,7 +5,7 @@
  *   - NPM_TOKEN                — bearer token for authenticated endpoints
  *   - NPM_REGISTRY             — alternate registry URL (defaults to https://registry.npmjs.org)
  *   - NPM_REQUEST_TIMEOUT_MS   — per-request timeout (defaults to 30000)
- *   - NPM_RETRY_BACKOFF_MS     — base backoff between retries (defaults to 500)
+ *   - NPM_RETRY_BACKOFF_MS     — base backoff between retries (defaults to 500; set to 0 to disable backoff entirely, e.g. in tests)
  *   - DEBUG=npmjs-mcp          — emit one-line request traces on stderr (tokens never logged)
  *
  * Base URLs:
@@ -45,6 +45,11 @@ function getTimeoutMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TIMEOUT_MS;
 }
 
+/**
+ * Compute the exponential backoff wait for a given retry attempt.
+ * NPM_RETRY_BACKOFF_MS=0 is an intentional no-delay escape hatch (used by
+ * tests to avoid real sleeps); 0 * 2^n is still 0, so no clamping is applied.
+ */
 function getBackoffMs(attempt: number): number {
   const raw = process.env.NPM_RETRY_BACKOFF_MS;
   const parsed = raw !== undefined ? Number(raw) : Number.NaN;
@@ -410,6 +415,10 @@ function parseSingleConstraint(r: string): SemverRange | null {
 
   if (r.startsWith(">")) {
     // >1.2.3 → >=1.2.4 (safe for non-prerelease versions, which is all we match)
+    // Known limitation: ">1.2.3-beta" is not semver-precise here (patch+1 skips
+    // prerelease ordering). File-for-later: npm registry versions almost never
+    // use ">" with a prerelease anchor, so this edge case is not worth the
+    // additional complexity now.
     const base = parseSemver(r.slice(1));
     if (!base) return null;
     return { min: [base[0], base[1], base[2] + 1], max: null };

@@ -40,13 +40,21 @@ export const trustTools = [
         // Extract provider-specific fields from claims
         if (c.type === "github") {
           result.repository = c.claims?.repository;
-          const workflowRef = c.claims?.workflow_ref as { file?: string } | undefined;
-          result.workflowFile = workflowRef?.file;
+          const workflowRef = c.claims?.workflow_ref;
+          if (typeof workflowRef === "string") {
+            result.workflowFile = workflowRef;
+          } else if (workflowRef && typeof workflowRef === "object") {
+            result.workflowFile = (workflowRef as { file?: string }).file;
+          }
           result.environment = c.claims?.environment;
         } else if (c.type === "gitlab") {
           result.project = c.claims?.project_path;
-          const configRef = c.claims?.ci_config_ref_uri as { file?: string } | undefined;
-          result.configFile = configRef?.file;
+          const configRef = c.claims?.ci_config_ref_uri;
+          if (typeof configRef === "string") {
+            result.configFile = configRef;
+          } else if (configRef && typeof configRef === "object") {
+            result.configFile = (configRef as { file?: string }).file;
+          }
           result.environment = c.claims?.environment;
         } else if (c.type === "circleci") {
           result.project = c.claims?.project_id;

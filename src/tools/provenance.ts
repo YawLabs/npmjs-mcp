@@ -15,8 +15,9 @@ export const provenanceTools = [
   {
     name: "npm_provenance",
     description:
-      "Get Sigstore provenance attestations for a specific package version. Shows SLSA provenance (which CI built it, from which repo/commit) " +
-      "and publish attestations. Essential for supply chain security verification.",
+      "Retrieve Sigstore attestations for a specific package version. Shows SLSA provenance (which CI built it, from which repo/commit) " +
+      "and publish attestations. NOTE: this tool RETRIEVES attestations from the registry -- it does NOT perform cryptographic signature, " +
+      "certificate-chain, or Rekor transparency-log verification. Use a dedicated Sigstore client to cryptographically verify the bundles.",
     annotations: {
       title: "Package provenance",
       readOnlyHint: true,
@@ -29,6 +30,9 @@ export const provenanceTools = [
       version: z.string().describe("Exact semver version (e.g. '1.0.0')"),
     }),
     handler: async (input: { name: string; version: string }) => {
+      if (!input.version || !input.version.trim()) {
+        return { ok: false as const, status: 400, error: "version is required and must not be empty" };
+      }
       // Both name and version must be URL-encoded. Versions with build metadata (e.g.
       // '1.0.0-beta+exp.sha.5114f85') contain '+' which URL-decoders treat as space —
       // leaving it unencoded produces a silent 404 from the registry.
@@ -49,8 +53,10 @@ export const provenanceTools = [
           package: input.name,
           version: input.version,
           attestationCount: attestations.length,
-          hasProvenance: attestations.some((a) => a.predicateType.includes("slsa.dev/provenance")),
-          hasPublishAttestation: attestations.some((a) => a.predicateType.includes("npmjs.com/attestation")),
+          hasProvenance: attestations.some((a) => a.predicateType.startsWith("https://slsa.dev/provenance")),
+          hasPublishAttestation: attestations.some((a) =>
+            a.predicateType.startsWith("https://npmjs.com/attestation"),
+          ),
           attestations,
         },
       };

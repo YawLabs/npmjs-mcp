@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { downloadsGet, encPkg } from "../api.js";
+import { downloadsGet, encPkg, validatePackageName } from "../api.js";
 import { translateError } from "../errors.js";
 
 export const downloadTools = [
@@ -19,7 +19,7 @@ export const downloadTools = [
       period: z
         .string()
         .optional()
-        .describe("Period: 'last-day', 'last-week', 'last-month', 'last-year', or 'YYYY-MM-DD:YYYY-MM-DD'"),
+        .describe("Period: 'last-day', 'last-week', 'last-month', 'last-year', or 'YYYY-MM-DD:YYYY-MM-DD' (default: 'last-week')"),
     }),
     handler: async (input: { name: string; period?: string }) => {
       const period = input.period ?? "last-week";
@@ -42,7 +42,7 @@ export const downloadTools = [
       period: z
         .string()
         .optional()
-        .describe("Period: 'last-week', 'last-month', 'last-year', or 'YYYY-MM-DD:YYYY-MM-DD'"),
+        .describe("Period: 'last-week', 'last-month', 'last-year', or 'YYYY-MM-DD:YYYY-MM-DD' (default: 'last-month')"),
     }),
     handler: async (input: { name: string; period?: string }) => {
       const period = input.period ?? "last-month";
@@ -68,6 +68,13 @@ export const downloadTools = [
     }),
     handler: async (input: { packages: string[]; period?: string }) => {
       const period = input.period ?? "last-week";
+
+      // Validate all names before any network call so a malformed name returns
+      // a clean 400 rather than an uncaught throw from encPkg.
+      for (const pkg of input.packages) {
+        const nameErr = validatePackageName(pkg);
+        if (nameErr) return { ok: false, status: 400, error: nameErr };
+      }
 
       // The downloads bulk endpoint silently 404s on scoped packages — reject
       // upfront with an actionable message rather than masking it as "not found".

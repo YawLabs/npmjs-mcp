@@ -52,10 +52,10 @@ export interface Packument {
   _attachments?: unknown;
   name: string;
   description?: string;
-  "dist-tags": Record<string, string>;
+  "dist-tags"?: Record<string, string>;
   versions: Record<string, VersionDoc>;
   time: Record<string, string>;
-  maintainers: Array<{ name: string; email?: string }>;
+  maintainers?: Array<{ name: string; email?: string }>;
   author?: { name?: string; email?: string; url?: string } | string;
   license?: string;
   homepage?: string;
@@ -94,6 +94,10 @@ export interface TokenObject {
   created: string;
   updated: string;
   readonly: boolean;
+  /** Token class returned by /-/npm/v1/tokens: "legacy" | "npm_v2" | "granular" (registry-dependent). */
+  type?: string;
+  /** True for classic automation tokens, which bypass 2FA. Absent on tokens that predate the field. */
+  automation?: boolean;
 }
 
 /** Paginated response from /-/npm/v1/tokens. */

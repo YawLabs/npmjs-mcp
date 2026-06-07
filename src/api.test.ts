@@ -50,7 +50,7 @@ describe("maxSatisfying", () => {
   });
 
   it("tilde does not cross the minor boundary", () => {
-    assert.notEqual(maxSatisfying(versions, "~1.2.3"), "1.3.0");
+    assert.equal(maxSatisfying(versions, "~1.2.3"), "1.2.4");
   });
 
   it("resolves >= ranges to the highest overall", () => {
@@ -66,8 +66,8 @@ describe("maxSatisfying", () => {
   });
 
   it("resolves > ranges (exclusive lower bound)", () => {
-    // >1.0.0 should not include 1.0.0
-    assert.notEqual(maxSatisfying(versions, ">1.0.0"), "1.0.0");
+    // >1.0.0 should pick the highest version above 1.0.0
+    assert.equal(maxSatisfying(versions, ">1.0.0"), "2.1.0");
   });
 
   it("resolves hyphen ranges", () => {

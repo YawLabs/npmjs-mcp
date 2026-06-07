@@ -57,8 +57,12 @@ export const workflowTools = [
       result.authenticated = true;
       result.username = whoamiRes.data!.username;
 
-      // Check 2FA status
-      const profileRes = await registryGetAuth<UserProfile>("/-/npm/v1/user");
+      // Check 2FA status and token inventory concurrently — neither depends on the other
+      const [profileRes, tokensRes] = await Promise.all([
+        registryGetAuth<UserProfile>("/-/npm/v1/user"),
+        registryGetAuth<TokenListResponse>("/-/npm/v1/tokens"),
+      ]);
+
       if (profileRes.ok && profileRes.data) {
         const tfa = profileRes.data.tfa;
         if (tfa && !tfa.pending) {
@@ -66,10 +70,10 @@ export const workflowTools = [
         } else {
           result.twoFactorAuth = "disabled";
         }
+      } else {
+        result.twoFactorAuth = "fetch-failed";
       }
 
-      // Check token inventory for capability assessment
-      const tokensRes = await registryGetAuth<TokenListResponse>("/-/npm/v1/tokens");
       if (tokensRes.ok && tokensRes.data) {
         const tokens = tokensRes.data.objects;
         const hasReadWrite = tokens.some((t) => !t.readonly);
@@ -83,6 +87,13 @@ export const workflowTools = [
         result.canPublishHeadless = true;
         result.tokenType = "any (2FA disabled)";
         result.recommendation = "2FA is disabled — any valid token can publish. Consider enabling 2FA for security.";
+      } else if (result.twoFactorAuth === "fetch-failed") {
+        // Profile endpoint failed — token lacks the required permission or there was a network error
+        result.canPublishHeadless = null;
+        result.tokenType = "unknown (profile fetch failed)";
+        result.recommendation =
+          "Could not determine 2FA status -- token may lack read permission on /-/npm/v1/user. " +
+          "Verify the token has at least read access and re-run npm_check_auth.";
       } else {
         // 2FA is enabled — we can't know for certain if the current token is automation-type
         // from the API alone (tokens are redacted). But we can give accurate guidance.
@@ -184,7 +195,13 @@ export const workflowTools = [
 
         // ─── 2. 2FA and token type analysis ───
         if (username) {
-          const profileRes = await registryGetAuth<UserProfile>("/-/npm/v1/user");
+          // Profile and token inventory are independent — fetch concurrently.
+          // Process profile first (twoFactorAuth is read when evaluating tokens below).
+          const [profileRes, tokensRes] = await Promise.all([
+            registryGetAuth<UserProfile>("/-/npm/v1/user"),
+            registryGetAuth<TokenListResponse>("/-/npm/v1/tokens"),
+          ]);
+
           if (profileRes.ok && profileRes.data) {
             const tfa = profileRes.data.tfa;
             if (tfa && !tfa.pending) {
@@ -203,10 +220,17 @@ export const workflowTools = [
                 detail: "2FA is disabled. Any valid token can publish, but 2FA is strongly recommended for security.",
               });
             }
+          } else {
+            checks.push({
+              check: "2FA status",
+              status: "warn",
+              detail:
+                "Could not determine 2FA status -- token may lack read permission on /-/npm/v1/user. " +
+                "Verify the token has at least read access and re-run npm_publish_preflight.",
+            });
           }
 
-          // Token inventory
-          const tokensRes = await registryGetAuth<TokenListResponse>("/-/npm/v1/tokens");
+          // Token inventory — tokensRes already resolved above
           if (tokensRes.ok && tokensRes.data) {
             const tokens = tokensRes.data.objects;
             const totalTokens = tokensRes.data.total;

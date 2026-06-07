@@ -46,7 +46,25 @@ describe("Tool definitions", () => {
   });
 
   it("should have the expected total tool count", () => {
-    assert.equal(allTools.length, 64);
+    // Derived from the sum of per-module counts below so it stays in sync
+    // automatically when a module gains or loses tools.
+    const expectedTotal =
+      1 +  // searchTools
+      6 +  // packageTools
+      3 +  // dependencyTools
+      4 +  // downloadTools
+      3 +  // securityTools
+      4 +  // analysisTools
+      3 +  // registryTools
+      5 +  // authTools
+      5 +  // orgTools
+      2 +  // accessTools
+      1 +  // provenanceTools
+      1 +  // trustTools
+      2 +  // workflowTools
+      19 + // writeTools
+      5;   // hookTools
+    assert.equal(allTools.length, expectedTotal);
   });
 
   for (const tool of allTools) {

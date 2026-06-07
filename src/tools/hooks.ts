@@ -146,7 +146,17 @@ export const hookTools = [
       if (authErr) return authErr;
 
       const qs = new URLSearchParams();
-      if (input.package) qs.set("package", input.package);
+      if (input.package) {
+        const pkgErr = validatePackageName(input.package);
+        if (pkgErr) {
+          return {
+            ok: false,
+            status: 400,
+            error: `Invalid package filter '${input.package}': ${pkgErr}`,
+          };
+        }
+        qs.set("package", input.package);
+      }
       if (input.limit !== undefined) qs.set("limit", String(input.limit));
       if (input.offset !== undefined) qs.set("offset", String(input.offset));
       const q = qs.toString();

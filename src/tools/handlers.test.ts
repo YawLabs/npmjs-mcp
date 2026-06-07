@@ -82,7 +82,10 @@ function mockFetchMulti(routes: Record<string, unknown>, fallbackStatus = 200) {
     lastRequest = { url, method, headers, body };
     requests.push(lastRequest);
 
-    // Find matching route
+    // Find matching route (longest-match-first was attempted but reverted: several
+    // tests use routes where a longer key like "replicate.npmjs.com/" is a prefix
+    // of the URL matched by a shorter key like "/_changes", so sorting by length
+    // descending causes the wrong fixture to be returned for those routes).
     for (const [pattern, data] of Object.entries(routes)) {
       if (url.includes(pattern)) {
         return new Response(JSON.stringify(data), {
@@ -1003,7 +1006,7 @@ describe("Analysis handlers", () => {
     const tool = findTool(analysisTools, "npm_compare");
     await tool.handler({ packages: ["express", "koa"] });
     // 2 packuments + 2 downloads + 1 batched audit = 5 (was N*3 before batching).
-    assert.ok(requests.length >= 4);
+    assert.equal(requests.length, 5);
   });
 
   it("npm_compare batches the audit into one POST regardless of package count", async () => {
@@ -1606,7 +1609,7 @@ describe("Registry handlers", () => {
     const result = (await tool.handler({})) as {
       ok: boolean;
       data: {
-        totalPackages: number | null;
+        registryPackageCount: number | null;
         changes: Array<{ package: string; rev: string }>;
       };
     };
@@ -1660,10 +1663,10 @@ describe("Registry handlers", () => {
     const tool = findTool(registryTools, "npm_recent_changes");
     const result = (await tool.handler({})) as {
       ok: boolean;
-      data: { totalPackages: number | null; changes: unknown[] };
+      data: { registryPackageCount: number | null; changes: unknown[] };
     };
     assert.equal(result.ok, true);
-    assert.equal(result.data.totalPackages, null);
+    assert.equal(result.data.registryPackageCount, null);
     assert.equal(result.data.changes.length, 1);
   });
 

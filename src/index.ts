@@ -118,4 +118,9 @@ for (const tool of allTools) {
 }
 
 const transport = new StdioServerTransport();
-await server.connect(transport);
+// Not top-level await: keeps this entry CJS-bundleable for the single-binary
+// build (esbuild can't emit TLA to CJS). Behaviour matches a rejected await.
+server.connect(transport).catch((err: unknown) => {
+  process.stderr.write(`npmjs-mcp: ${err instanceof Error ? err.message : String(err)}\n`);
+  process.exit(1);
+});

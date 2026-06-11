@@ -3,3 +3,6 @@ dist/
 *.tsbuildinfo
 .claude/*
 !.claude/settings.json
+bin/
+build-tmp/
+dist-release/

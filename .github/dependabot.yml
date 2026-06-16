@@ -12,6 +12,12 @@ updates:
       prefix: deps
       include: scope
     groups:
+      # Batch all security (vulnerability) updates into one PR per run instead
+      # of one PR per advisory, so security fixes arrive grouped.
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
       # Group minor + patch dev-dep updates so we get one PR per week instead
       # of four. Majors stay ungrouped — each gets its own PR so we can review
       # breaking changes (Biome config migrations, TS/Zod API shifts) one at a

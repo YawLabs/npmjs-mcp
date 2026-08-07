@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] -- 2026-08-07
+
 ### Added
+- Cross-building standalone binaries via an oam carrier. `NPMJS_MCP_BINARY_RUNTIME=oam` builds through oam instead of Node SEA, and `NPMJS_MCP_BINARY_TARGET=<platform>-<arch>` cross-builds for another target from any host — SEA cannot, because it embeds the running `node` as its carrier. oam's embed format is a tail trailer (`[JS][u64 LE len][OAMEXEC\0]`), and appending to an executable's tail is tolerated identically by PE, ELF and Mach-O, so only the carrier is platform-specific. The carrier is fetched from the published oam release and verified against its `SHA256SUMS` entry; a mismatch or missing entry aborts. Verified: a linux-x64 cross build from windows-arm64 produces a genuine `ELF 64-bit LSB pie executable, x86-64` whose trailer length matches the bundle byte for byte.
 - Runtime launcher at `bin/npmjs-mcp.mjs`: the published `npmjs-mcp` command now prefers the [oam](https://oamjs.org) runtime and falls back to Node. `NPMJS_MCP_RUNTIME` selects (`auto` / `oam` / `node`) and `OAM_BIN` overrides discovery. Both paths were verified against the full MCP surface — handshake, 64 tools, live registry call, and the destructive-op confirm gate — and behave identically, because the server is a pre-bundled ESM file using only `node:` builtins oam implements.
 - `dev:oam` script: `oam run --check=warn src/index.ts` runs the TypeScript source with no build step, type-checking concurrently rather than blocking execution.
 

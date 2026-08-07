@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Corrected the benchmarking caveat published in 0.14.0. It attributed the earlier bad measurement to an on-access virus scanner rescanning build outputs on **every** exec, citing a 5.0x penalty (306 ms → 61 ms). That does not reproduce — the same interleaved comparison on a settled tree measures 1.03x. The original was taken while a concurrent session was rebuilding oam, so every exec hit different bytes. The guidance survives with the right reason: measure an **installed** oam, never one out of `target/`, because a build directory's contents change underneath a running benchmark. The performance figures in 0.14.0 were re-verified against an installed binary and are unchanged — node 167 ms vs oam 112 ms, **0.67x**.
+
 ## [0.14.0] -- 2026-08-07
 
 ### Added

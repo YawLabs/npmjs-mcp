@@ -33,13 +33,22 @@
  * straight at oam and skip this file entirely:
  *   { "command": "oam", "args": ["run", "<abs>/dist/index.js"] }
  *
- * MEASURING THIS YOURSELF: do not benchmark a binary sitting in a cargo
- * `target/` directory. On this machine an active AV (McAfee; Defender is
- * passive) rescans it on EVERY exec -- the identical bytes copied elsewhere and
- * run once to absorb the scan start 5.0x faster (306 ms -> 61 ms, interleaved,
- * reproducible). An earlier revision of this comment claimed oam was a
- * regression; that number was measuring the virus scanner. oam is pre-alpha,
- * so re-measure regardless -- but measure an installed binary.
+ * MEASURING THIS YOURSELF: use an INSTALLED oam (~/.oam/bin), never one out of
+ * a cargo `target/` directory. A build directory is not a stable place to
+ * measure from -- a concurrent `cargo build` replaces the binary mid-run, and
+ * fresh bytes are cold where the installed `node.exe` you are comparing against
+ * is warm.
+ *
+ * Two corrections are baked into that sentence, both mine. An early revision
+ * claimed oam was a cold-start REGRESSION; that was measured through a shell
+ * wrapper whose fork/exec floor buried the signal. A later revision blamed an
+ * on-access virus scanner rescanning build outputs on every exec, citing a 5.0x
+ * penalty; that does not reproduce either -- the same comparison on a settled
+ * tree gives 1.03x, and the original was taken while a sibling session was
+ * rebuilding oam underneath it.
+ *
+ * The numbers above are the ones that survive: installed binary, quiet machine,
+ * interleaved, n=12. oam is pre-alpha -- re-measure on your own hardware.
  *
  * WHAT WE DELIBERATELY DO NOT DO -- FOR NOW
  * oam's `--permission` model is not used. As of oam 0.8.2 its own divergence

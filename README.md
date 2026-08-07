@@ -123,7 +123,7 @@ npm `bin` entries are Node scripts, so reaching oam through one costs Node's sta
 { "mcpServers": { "npmjs": { "command": "oam", "args": ["run", "/abs/path/to/dist/index.js"] } } }
 ```
 
-Benchmarking note: do not time a binary sitting in a cargo `target/` directory. On the machine these numbers came from, an active virus scanner rescanned it on every exec — the identical bytes copied elsewhere ran 5.0x faster. oam is pre-alpha; re-measure on your own hardware, using an installed binary.
+Benchmarking note: measure an **installed** oam (`~/.oam/bin`), never one out of a cargo `target/` directory — a concurrent `cargo build` replaces the binary mid-run, and fresh bytes are cold where the `node.exe` you are comparing against is warm. oam is pre-alpha; re-measure on your own hardware.
 
 oam's `--permission` sandbox is deliberately **not** used: it denies network access and implements no grant to restore it, which would leave every registry call failing.
 

@@ -8,10 +8,14 @@ import {
   encTeam,
   encUser,
   maxSatisfying,
+  parseRetryAfter,
   registryGet,
   registryGetAuth,
   registryPost,
+  RETRY_AFTER_CEILING_MS,
+  registryPutAuth,
   validatePackageName,
+  validatePeriod,
   validateScope,
   validateTag,
   validateTeam,
@@ -307,6 +311,68 @@ describe("validateTag / encTag", () => {
   });
 });
 
+// ─── validatePeriod ───
+
+describe("validatePeriod", () => {
+  it("accepts the documented keywords", () => {
+    for (const p of ["last-day", "last-week", "last-month", "last-year"]) {
+      assert.equal(validatePeriod(p), null, `should accept ${p}`);
+    }
+  });
+
+  it("accepts a single ISO date and an ISO date range", () => {
+    assert.equal(validatePeriod("2026-01-01"), null);
+    assert.equal(validatePeriod("2026-01-01:2026-12-31"), null);
+  });
+
+  it("rejects values that would re-point the request path", () => {
+    // The period is interpolated into the downloads-API path, so anything
+    // carrying separators must not survive validation.
+    for (const p of ["last-week/../../-/v1/search", "../../etc/passwd", "last-week/foo"]) {
+      assert.ok(validatePeriod(p), `should reject ${JSON.stringify(p)}`);
+    }
+  });
+
+  it("rejects empty, unknown keywords, and malformed ranges", () => {
+    for (const p of ["", "last-fortnight", "2026-01-01:2026-12-31:extra", "2026-1-1", ":", "2026-01-01:"]) {
+      assert.ok(validatePeriod(p), `should reject ${JSON.stringify(p)}`);
+    }
+  });
+});
+
+// ─── Retry-After parsing and clamp ───
+
+describe("parseRetryAfter", () => {
+  it("returns null when the header is absent or unparseable", () => {
+    assert.equal(parseRetryAfter(null), null);
+    assert.equal(parseRetryAfter("soon-ish"), null);
+  });
+
+  it("converts delta-seconds to milliseconds", () => {
+    assert.equal(parseRetryAfter("0"), 0);
+    assert.equal(parseRetryAfter("5"), 5000);
+  });
+
+  it("clamps a long delta-seconds wait to the ceiling", () => {
+    // Without the clamp a `Retry-After: 300` parks the tool call for 5 minutes
+    // per attempt -- an order of magnitude past the 30s request timeout, with
+    // no way for the caller to interrupt.
+    assert.equal(parseRetryAfter("300"), RETRY_AFTER_CEILING_MS);
+    assert.equal(parseRetryAfter("3600"), RETRY_AFTER_CEILING_MS);
+  });
+
+  it("clamps a far-future HTTP-date the same way", () => {
+    const farFuture = new Date(Date.now() + 3_600_000).toUTCString();
+    assert.equal(parseRetryAfter(farFuture), RETRY_AFTER_CEILING_MS);
+  });
+
+  it("floors a past HTTP-date at zero rather than going negative", () => {
+    // A negative wait would be passed to setTimeout and fire immediately, but
+    // it would also mean the clamp arithmetic had gone wrong.
+    assert.equal(parseRetryAfter("Wed, 21 Oct 2015 07:28:00 GMT"), 0);
+  });
+});
+
 // ─── Retry/backoff + env-driven base URL ───
 
 const originalFetch = globalThis.fetch;
@@ -512,7 +578,113 @@ describe("retry/backoff on transient failures", () => {
   });
 });
 
+describe("write requests are not re-sent when the outcome is ambiguous", () => {
+  it("does NOT retry a write after a network error -- the registry may have applied it", async () => {
+    // A timeout or dropped connection on a PUT is ambiguous: the mutation may
+    // have landed and only the response was lost. Re-sending it replays the
+    // write against a now-stale _rev, which comes back 409 and reads like a
+    // failure on an operation that actually succeeded.
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    let i = 0;
+    globalThis.fetch = (async () => {
+      i++;
+      throw new TypeError("fetch failed");
+    }) as typeof fetch;
+
+    const res = await registryPutAuth("/test", { hello: "world" });
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 0);
+    assert.equal(i, 1, "a mutating request must be sent exactly once");
+    assert.match(res.error ?? "", /is not re-sent after a transport failure/);
+    assert.match(res.error ?? "", /may have already applied/);
+  });
+
+  it("does NOT retry a write on 502 -- a gateway error can follow a successful origin write", async () => {
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    let i = 0;
+    globalThis.fetch = (async () => {
+      i++;
+      return new Response("gateway error", { status: 502 });
+    }) as typeof fetch;
+
+    const res = await registryPutAuth("/test", {});
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 502);
+    assert.equal(i, 1, "502 on a write must not be re-sent");
+  });
+
+  it("DOES retry a write on 503 -- an explicit 'I did not process this' refusal", async () => {
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    let i = 0;
+    globalThis.fetch = (async () => {
+      i++;
+      if (i < 2) return new Response("unavailable", { status: 503 });
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const res = await registryPutAuth("/test", {});
+    assert.equal(res.ok, true);
+    assert.equal(i, 2);
+  });
+
+  it("GET still retries network errors (the idempotent path is unchanged)", async () => {
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    let i = 0;
+    globalThis.fetch = (async () => {
+      i++;
+      throw new TypeError("fetch failed");
+    }) as typeof fetch;
+
+    const res = await registryGet("/test");
+    assert.equal(res.ok, false);
+    assert.equal(i, 3, "reads keep the full retry budget");
+  });
+
+  it("registryPost (audit lookups) keeps the idempotent retry policy despite being a POST", async () => {
+    // The advisory endpoints take a POST body but mutate nothing, so they opt
+    // back into network-error retries via the `idempotent` flag.
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    let i = 0;
+    globalThis.fetch = (async () => {
+      i++;
+      if (i < 2) throw new TypeError("fetch failed");
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const res = await registryPost("/-/npm/v1/security/advisories/bulk", {});
+    assert.equal(res.ok, true);
+    assert.equal(i, 2);
+  });
+});
+
 describe("response body handling", () => {
+  it("reports an unparseable 2xx body against its real status instead of retrying", async () => {
+    // A malformed body on a 2xx is a response defect, not a transport failure.
+    // Retrying re-issues a request the registry already answered -- and, on a
+    // write, already applied.
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    let i = 0;
+    globalThis.fetch = (async () => {
+      i++;
+      return new Response("<html>not json</html>", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const res = await registryGet("/test");
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 200, "the real status is preserved, not collapsed to 0");
+    assert.equal(i, 1, "the registry already answered -- must not re-send");
+    assert.match(res.error ?? "", /unparseable JSON body/);
+  });
+
   it("handles 204 No Content with no body", async () => {
     globalThis.fetch = (async () => {
       return new Response(null, { status: 204 });

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { downloadsGet, replicateGet } from "../api.js";
+import { downloadsGet, replicateGet, validatePeriod } from "../api.js";
 import { translateError } from "../errors.js";
 
 export const registryTools = [
@@ -18,6 +18,9 @@ export const registryTools = [
     }),
     handler: async (input: { period?: string }) => {
       const period = input.period ?? "last-week";
+      const periodErr = validatePeriod(period);
+      if (periodErr) return { ok: false, status: 400, error: periodErr };
+
       const res = await downloadsGet(`/downloads/point/${period}`);
       return res.ok ? res : translateError(res, { op: `registry_stats ${period}` });
     },
@@ -105,8 +108,12 @@ export const registryTools = [
             requiresNpmToken: true,
             messageFormat: {
               preferred: "Renamed to @scope/pkg -- install that instead",
-              avoid: "Renamed to @scope/pkg. Install that instead.",
-              note: "Period-capital form has triggered 422 on at least one scoped package; use em-dash.",
+              limit: "Hard registry limit: 1024 characters. That is the ONLY format constraint enforced.",
+              note:
+                "Message punctuation does NOT cause 422s. An earlier version of this playbook claimed a " +
+                "'period + capital letter' message triggered 422; follow-up diagnosis traced that incident to a " +
+                "wildcard version range matching no published versions, and the heuristic was removed in v0.10 " +
+                "for false positives. If a deprecate 422s, check the semver range against npm_versions first.",
             },
           },
           undeprecate: "mcp_tool: npm_undeprecate",

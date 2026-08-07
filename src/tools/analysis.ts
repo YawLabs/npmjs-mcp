@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { type ApiResponse, downloadsGet, encPkg, registryGet, registryPost, validatePackageName } from "../api.js";
-import { translateError } from "../errors.js";
+import { emptyBodyError, translateError } from "../errors.js";
 import type { Packument } from "../types.js";
 
 interface DownloadPoint {
@@ -52,8 +52,8 @@ export const analysisTools = [
       // reporting zero vulnerabilities on a 5xx.
       const auditMap: Record<string, string[]> = {};
       for (const { name, pkgRes } of partials) {
-        if (!pkgRes.ok) continue;
-        const latest = pkgRes.data!["dist-tags"]?.latest;
+        if (!pkgRes.ok || !pkgRes.data) continue;
+        const latest = pkgRes.data["dist-tags"]?.latest;
         if (latest) auditMap[name] = [latest];
       }
       let auditData: Record<string, unknown[]> = {};
@@ -83,11 +83,17 @@ export const analysisTools = [
           const translated = translateError(pkgRes, { pkg: name, op: "compare" });
           return { name, error: translated.error };
         }
+        // A 2xx with no body would otherwise throw here and take down the whole
+        // comparison; degrade this row to an error entry like a failed fetch.
+        if (!pkgRes.data) {
+          return { name, error: emptyBodyError({ pkg: name, op: "compare" }).error };
+        }
 
-        const pkg = pkgRes.data!;
+        const pkg = pkgRes.data;
         const latest = pkg["dist-tags"]?.latest;
-        const latestVersion = latest ? pkg.versions[latest] : undefined;
-        const versionKeys = Object.keys(pkg.versions);
+        const latestVersion = latest ? pkg.versions?.[latest] : undefined;
+        const versionKeys = Object.keys(pkg.versions ?? {});
+        const time = pkg.time ?? {};
         // `auditReliable` is true iff the bulk POST returned for this package's
         // latest version. When false, `vulnerabilities` is null rather than 0 —
         // a 5xx on the bulk endpoint must not silently report "clean" for every
@@ -109,8 +115,8 @@ export const analysisTools = [
           weeklyDownloads: dlRes.ok && dlRes.data ? dlRes.data.downloads : null,
           // versionCount includes ALL published versions (stable + pre-releases).
           versionCount: versionKeys.length,
-          created: pkg.time.created,
-          lastPublish: latest ? pkg.time[latest] : undefined,
+          created: time.created,
+          lastPublish: latest ? time[latest] : undefined,
           // `deprecated` is false when not deprecated, or the message string when deprecated.
           deprecated: latestVersion?.deprecated ?? false,
           hasReadme: !!(pkg.readme && pkg.readme.length > 0),
@@ -146,16 +152,17 @@ export const analysisTools = [
       ]);
 
       if (!pkgRes.ok) return translateError(pkgRes, { pkg: input.name, op: "health" });
+      if (!pkgRes.data) return emptyBodyError({ pkg: input.name, op: "health" });
 
-      const pkg = pkgRes.data!;
+      const pkg = pkgRes.data;
       const latest = pkg["dist-tags"]?.latest;
       // `latestVersion` may be undefined when `latest` exists in dist-tags but
       // the corresponding entry is absent from `versions` (partially-written
       // packument). All downstream reads use optional chaining, so this is
       // safe: daysSinceLastPublish derives from versionKeys (not from latest
       // directly), and isDeprecated/license use `latestVersion?.field`.
-      const latestVersion = latest ? pkg.versions[latest] : undefined;
-      const versionKeys = Object.keys(pkg.versions);
+      const latestVersion = latest ? pkg.versions?.[latest] : undefined;
+      const versionKeys = Object.keys(pkg.versions ?? {});
 
       // Security check — audit the latest version. `auditReliable` distinguishes
       // "audit returned zero advisories" from "audit failed to return". Without
@@ -180,7 +187,7 @@ export const analysisTools = [
 
       // Calculate release cadence from the time object
       const publishDates = versionKeys
-        .map((v) => pkg.time[v])
+        .map((v) => pkg.time?.[v])
         .filter(Boolean)
         .map((d) => new Date(d).getTime())
         .sort((a, b) => b - a);
@@ -281,12 +288,13 @@ export const analysisTools = [
     handler: async (input: { name: string }) => {
       const res = await registryGet<Packument>(`/${encPkg(input.name)}`);
       if (!res.ok) return translateError(res, { pkg: input.name, op: "maintainers" });
+      if (!res.data) return emptyBodyError({ pkg: input.name, op: "maintainers" });
 
-      const pkg = res.data!;
+      const pkg = res.data;
 
       // Build per-maintainer publish counts
       const publishCounts: Record<string, number> = {};
-      for (const ver of Object.values(pkg.versions)) {
+      for (const ver of Object.values(pkg.versions ?? {})) {
         const publisher = ver._npmUser?.name;
         if (publisher) {
           publishCounts[publisher] = (publishCounts[publisher] ?? 0) + 1;
@@ -324,12 +332,13 @@ export const analysisTools = [
     handler: async (input: { name: string; limit?: number }) => {
       const res = await registryGet<Packument>(`/${encPkg(input.name)}`);
       if (!res.ok) return translateError(res, { pkg: input.name, op: "release_frequency" });
+      if (!res.data) return emptyBodyError({ pkg: input.name, op: "release_frequency" });
 
-      const pkg = res.data!;
+      const pkg = res.data;
       const limit = input.limit ?? 20;
 
-      const releases = Object.keys(pkg.versions)
-        .map((v) => ({ version: v, date: pkg.time[v] }))
+      const releases = Object.keys(pkg.versions ?? {})
+        .map((v) => ({ version: v, date: pkg.time?.[v] }))
         .filter((r) => r.date)
         .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
         .slice(0, limit);
@@ -352,9 +361,9 @@ export const analysisTools = [
         data: {
           name: pkg.name,
           // totalVersions includes ALL published versions (stable + pre-releases).
-          totalVersions: Object.keys(pkg.versions).length,
+          totalVersions: Object.keys(pkg.versions ?? {}).length,
           analyzed: releases.length,
-          created: pkg.time.created,
+          created: pkg.time?.created,
           lastPublish: releases[0]?.date,
           avgDaysBetweenReleases: avgGap,
           longestGap: maxGap,

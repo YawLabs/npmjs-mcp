@@ -31,7 +31,14 @@ await build({
   },
   // Node built-ins are provided by the runtime, not bundled
   external: ["node:*"],
-  sourcemap: true,
+  // "external" writes dist/index.js.map but does NOT append a
+  // //# sourceMappingURL comment to the bundle. With plain `true` the published
+  // file referenced a map that package.json `files` did not ship; adding the map
+  // to `files` fixes the dangling reference but takes the packed tarball from
+  // 225 kB to 583 kB, which fights the whole reason this is bundled (npx cold
+  // start downloads the tarball on every run). External keeps the map on disk
+  // for local debugging and out of the published artifact.
+  sourcemap: "external",
   // Keep readable for debugging MCP issues
   minify: false,
 });

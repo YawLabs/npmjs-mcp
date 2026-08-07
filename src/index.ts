@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createRequire } from "node:module";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { accessTools } from "./tools/access.js";
@@ -19,11 +20,18 @@ import { workflowTools } from "./tools/workflows.js";
 import { writeTools } from "./tools/writes.js";
 
 // Injected at build time by esbuild; falls back to reading package.json for tsc builds.
+//
+// Deliberately NOT `await import("node:module")`: a top-level await here is
+// unrepresentable in the CJS output format the single-binary build uses
+// (scripts/build-binary.mjs), and it only ever compiled because the
+// `__VERSION__` define let esbuild dead-code-eliminate this branch before the
+// CJS emit. That made a build-breaking construct silently load-bearing on
+// constant folding. A static import plus a plain function has no such coupling.
 declare const __VERSION__: string | undefined;
-const version =
-  typeof __VERSION__ !== "undefined"
-    ? __VERSION__
-    : ((await import("node:module")).createRequire(import.meta.url)("../package.json") as { version: string }).version;
+function versionFromPackageJson(): string {
+  return (createRequire(import.meta.url)("../package.json") as { version: string }).version;
+}
+const version = typeof __VERSION__ !== "undefined" ? __VERSION__ : versionFromPackageJson();
 
 // ─── CLI subcommands (run instead of MCP server) ───
 

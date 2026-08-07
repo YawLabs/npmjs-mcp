@@ -27,7 +27,7 @@ export const orgTools = [
       const res = await registryGetAuth<Record<string, string>>(`/-/org/${encScope(input.org)}/user`);
       if (!res.ok) return translateError(res, { op: `org_members ${input.org}` });
 
-      const members = Object.entries(res.data!).map(([username, role]) => ({ username, role }));
+      const members = Object.entries(res.data ?? {}).map(([username, role]) => ({ username, role }));
       return {
         ok: true,
         status: 200,
@@ -63,7 +63,7 @@ export const orgTools = [
       const res = await registryGetAuth<Record<string, string>>(`/-/org/${encScope(input.org)}/package`);
       if (!res.ok) return translateError(res, { op: `org_packages ${input.org}` });
 
-      const packages = Object.entries(res.data!).map(([name, access]) => ({ name, access }));
+      const packages = Object.entries(res.data ?? {}).map(([name, access]) => ({ name, access }));
       return {
         ok: true,
         status: 200,
@@ -98,13 +98,16 @@ export const orgTools = [
       const res = await registryGetAuth<string[]>(`/-/org/${encScope(input.org)}/team`);
       if (!res.ok) return translateError(res, { op: `org_teams ${input.org}` });
 
+      // Guard the shape as well as the presence: a degraded 2xx can carry no
+      // body at all, and `.length` on undefined (or on a non-array) throws.
+      const teams = Array.isArray(res.data) ? res.data : [];
       return {
         ok: true,
         status: 200,
         data: {
           org: input.org,
-          teamCount: res.data!.length,
-          teams: res.data,
+          teamCount: teams.length,
+          teams,
         },
       };
     },
@@ -138,7 +141,7 @@ export const orgTools = [
       );
       if (!res.ok) return translateError(res, { op: `team_packages ${input.org}:${input.team}` });
 
-      const packages = Object.entries(res.data!).map(([name, permissions]) => ({ name, permissions }));
+      const packages = Object.entries(res.data ?? {}).map(([name, permissions]) => ({ name, permissions }));
       return {
         ok: true,
         status: 200,
@@ -180,7 +183,7 @@ export const orgTools = [
       );
       if (!res.ok) return translateError(res, { op: `team_members ${input.org}:${input.team}` });
 
-      const members = Object.entries(res.data!).map(([username, role]) => ({ username, role }));
+      const members = Object.entries(res.data ?? {}).map(([username, role]) => ({ username, role }));
       return {
         ok: true,
         status: 200,

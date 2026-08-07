@@ -31,7 +31,9 @@ export const trustTools = [
       const res = await registryGetAuth<TrustConfig[]>(`/-/package/${encPkg(input.name)}/trust`);
       if (!res.ok) return translateError(res, { pkg: input.name, op: "trusted_publishers" });
 
-      const configs = (res.data ?? []).map((c) => {
+      // Guard the shape, not just presence: a degraded 2xx yields no data, and
+      // a proxy registry can answer with an object where an array is expected.
+      const configs = (Array.isArray(res.data) ? res.data : []).map((c) => {
         const result: Record<string, unknown> = {
           id: c.id,
           provider: c.type,

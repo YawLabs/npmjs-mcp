@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+A second full-pass review over `src/` plus the build and release tooling. The headline items are a silent org-role demotion, a retry policy that could re-apply writes, and a release script whose "verify" step could fail an already-successful release.
+
+### Fixed
+- `npm_org_member_set` no longer demotes an existing admin or owner when `role` is omitted. The registry membership spec defines `role` as *"defaults to `developer` if not given"* -- it does not preserve the current value, and the npm CLI never exposes that because it fills the same default itself (`lib/commands/org.js`: `role = role || 'developer'`). A bare `{ user }` body therefore silently demoted the member. The handler now reads the roster and re-sends the existing role explicitly, so "omit `role` to keep the current role" is finally true. If the roster read fails it refuses the write rather than risking the demotion.
+- Write requests (`PUT`/`POST`/`DELETE` that mutate) are no longer retried after a network error or timeout. The registry may have applied the mutation and lost the response; retrying re-sent it with the same `_rev`, which came back 409 and read like a failure on an operation that had actually succeeded. Those requests now surface the ambiguity explicitly. Writes still retry on 429 and 503 -- the statuses that mean "I did not process this" -- but no longer on 502/504, which a gateway can return after the origin applied the change. Read-only audit `POST`s keep the full retry policy.
+- A malformed JSON body on a 2xx is reported against its real status instead of being caught as a transport failure and retried -- that path re-sent a request the registry had already answered.
+- `Retry-After` is clamped to 30s. An unbounded value parked a single tool call for minutes per attempt, an order of magnitude past the request timeout.
+- `npm_undeprecate` retries once on a 409 `_rev` conflict, matching `npm_deprecate`. Both do the same read-modify-write against the same revision, so both race the same way.
+- `npm_owner_add` matches existing maintainers case-insensitively (as `npm_owner_remove` already did). A packument entry whose case differed from the canonical `/-/user` record read as "not an owner" and appended a duplicate maintainer for the same person.
+- `npm_dep_tree` memoization is depth-aware. A node first reached at the depth limit was recorded without expanding its children, and a later arrival at a shallower depth short-circuited on the "already seen" check -- leaving that subtree missing. Because it turned on fetch-latency ordering, the same query could return different trees on different runs.
+- Handlers no longer assert `res.data!` on responses that can legitimately arrive empty. A 2xx with no body (which the client returns as `ok: true` with no `data`) produced a raw "Cannot read properties of undefined" at the MCP boundary; it now returns an actionable 502. Same fix applied to `packument.time`, `versionDoc.dist`, and the array-shaped org/trust responses.
+- `npm_publish_preflight` no longer reports "2FA is enabled and token type cannot be verified" when the profile fetch failed -- a state it never established. That case gets its own summary naming the real uncertainty.
+- Download and registry-stats handlers validate the `period` before interpolating it into the request path.
+- `npm_types` distinguishes "no `@types` package exists" (a 404) from "the lookup failed", via a new `typesLookupReliable` field. Any non-404 failure previously reported a definitive "No TypeScript types available".
+- `release.sh`: the post-publish npx smoke test ran as a bare subshell under `set -e`, so exhausting its retries terminated the script before the warn-only branch -- turning a slow registry into `[FAIL] Release failed` on an already-successful release. It now runs as an `if` condition.
+- `src/index.ts` no longer relies on a top-level `await import()`. TLA cannot be emitted in the CJS format the single-binary build uses, and it only ever compiled because the `__VERSION__` define let esbuild eliminate that branch first -- making a build-breaking construct load-bearing on constant folding.
+- The published bundle no longer carries a `sourceMappingURL` comment pointing at a file that was never shipped. The build now emits the sourcemap as `external`, keeping `dist/index.js.map` on disk for local debugging while leaving it out of the tarball -- shipping it instead would have taken the packed download from 225 kB to 583 kB on every `npx` cold start.
+
+### Changed
+- **Tool annotations:** `npm_owner_add`, `npm_team_create`, `npm_team_member_add`, and `npm_hook_add` now report `destructiveHint: false`. Per the MCP spec the hint means "may perform destructive updates", and these four only add. Previously a test invariant required `readOnlyHint` and `destructiveHint` to be strict opposites, which forced every write to claim destructiveness. **MCP hosts that gate confirmation prompts on `destructiveHint` will stop prompting for these four tools.** The invariant is now one-directional (read-only implies non-destructive), with explicit pins for both the additive set and the ten irreversible operations.
+- `npm_check_auth` and `npm_publish_preflight` treat 2FA mode `auth-only` as non-blocking for publishing. That mode challenges login, not writes, so those accounts publish headlessly with any valid token -- they were previously reported as `canPublishHeadless: null` with an EOTP warning. `auth-and-writes` (and any unrecognized future mode) still gates.
+- `npm_ops_playbook` no longer claims that period-and-capital deprecation messages trigger a 422. That heuristic was traced to a wildcard version range matching no published versions and removed from validation in v0.10; the playbook had kept propagating it to the agents it exists to advise. It now points at the 1024-character limit and the semver range instead.
+- `npm_hook_update`'s description matches its schema: both `endpoint` and `secret` are required, and the call always rotates the secret because the registry PUT replaces the whole hook config.
+- `release.sh` checks for a provenance attestation on every publish, not only in CI, and names the cause when one is absent.
+
+### Documentation
+- README: the `npm_audit_deep` example omitted the required `dependencies` field and passed the dependency as the project name, so it could not run as written. The publish row of the decision matrix pointed at a CI tag-push workflow that was removed in b2c256c.
+- `scripts/build-binary.mjs` no longer suggests verifying with a `doctor --json` subcommand that does not exist, or citing a `BINARY_DISTRIBUTION.md` that is not in the repo.
+
+## [0.12.2] -- 2026-07-21
+
+### Added
+- Cross-platform single-binary distribution pipeline: `scripts/build-binary.mjs` (esbuild + Node SEA), `scripts/stage-release-asset.mjs` (named release asset + sha256 sidecar), and `scripts/update-manifests.mjs` (Scoop bucket + Homebrew formula regeneration).
+- `--version` / `-v` / `-V` short forms alongside the `version` subcommand, used by the release smoke test.
+
+### Removed
+- The GitHub Actions workflows and Dependabot config (#35). Releases now run from the workstation via `release.sh`. Note that `npm publish --provenance` requires CI OIDC, so releases cut this way carry no sigstore provenance attestation.
+
 ## [0.12.1] -- 2026-06-07
 
 Hardening pass over the tool surface from a full-pass review: input validation on the write/bulk handlers, output-contract fixes, and test-suite robustness.

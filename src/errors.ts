@@ -66,6 +66,25 @@ export function translateError<T>(res: ApiResponse<T>, context: { pkg?: string; 
 }
 
 /**
+ * Build the error for a 2xx that carried no parseable body.
+ *
+ * `request()` returns `{ ok: true }` with no `data` for an empty 2xx (see
+ * api.ts). Handlers that need the body were reading it through `res.data!`,
+ * which turns that case into a TypeError surfaced as a generic "Error: Cannot
+ * read properties of undefined". This gives the caller something actionable
+ * and keeps the `{ ok, status, error }` shape used everywhere else.
+ */
+export function emptyBodyError(context: { pkg?: string; op?: string }): { ok: false; status: number; error: string } {
+  const pkgPart = context.pkg ? ` for ${context.pkg}` : "";
+  const opPart = context.op ? ` during ${context.op}` : "";
+  return {
+    ok: false,
+    status: 502,
+    error: `Registry returned a success status with an empty body${pkgPart}${opPart}. This is usually a transient registry or proxy fault -- retry the call.`,
+  };
+}
+
+/**
  * Validate a deprecation message against the npm registry's hard 1024-char limit.
  * Returns null if safe to send, or an error string explaining the issue.
  *

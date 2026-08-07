@@ -126,8 +126,31 @@ fi
 # =============================================================================
 step 1 "Lint"
 
-npm run lint || fail "Lint failed"
-info "Lint passed"
+# A crashed linter is not a lint result. On Windows ARM64 the biome binary
+# segfaults during exit (139 under bash, 3221225477 / 0xC0000005 under
+# PowerShell) BEFORE emitting any diagnostics -- verified by running it against
+# a file with deliberate formatting and unused-variable violations and getting
+# zero bytes of output. Both the npx wrapper and the native
+# node_modules/@biomejs/cli-win32-arm64/biome.exe do it, so it is biome itself,
+# not npm's exit path. Reporting that as "Lint failed" sends you hunting for
+# violations that were never reported; reporting it as a pass would be worse.
+# Say plainly that lint is UNVERIFIED and let the release continue.
+LINT_OUT=$(mktemp)
+if [ "${SKIP_LINT:-}" = "1" ]; then
+  warn "Lint SKIPPED (SKIP_LINT=1) -- UNVERIFIED for this release"
+elif npm run lint > "$LINT_OUT" 2>&1; then
+  info "Lint passed"
+else
+  LINT_RC=$?
+  if [ "$LINT_RC" -eq 139 ] || [ "$LINT_RC" -eq 3221225477 ]; then
+    warn "Lint runner CRASHED (exit $LINT_RC) with no diagnostics -- known biome segfault on this platform, NOT a lint failure. Lint is UNVERIFIED for this release."
+  else
+    cat "$LINT_OUT"
+    rm -f "$LINT_OUT"
+    fail "Lint failed"
+  fi
+fi
+rm -f "$LINT_OUT"
 
 # =============================================================================
 # Step 2: Test
@@ -231,6 +254,15 @@ step 5 "Publish to npm"
 #                                       version. CI is authoritative.
 #   3. IS_CI=false + no CI publish   -> Workstation IS the publisher. Try locally
 #      path                             with EOTP retry for fresh WebAuthn sessions.
+#
+# CURRENT STATE OF THIS REPO: the GitHub Actions workflows were removed in
+# b2c256c, so `.github/workflows/release.yml` does not exist and path 3 is the
+# live one. That has a consequence worth stating outright: `npm publish
+# --provenance` requires the OIDC token that only Actions issues, so releases
+# cut from a workstation carry NO sigstore provenance attestation. Restoring
+# attested releases means restoring a CI publish job (or an npm Trusted
+# Publisher), not a change in this script. Step 8 warns when a release lands
+# unattested so the gap stays visible instead of silently persisting.
 PUBLISHED_VERSION=$(npm view "@yawlabs/npmjs-mcp@${VERSION}" version 2>/dev/null || echo "")
 if [ "$PUBLISHED_VERSION" = "$VERSION" ]; then
   info "v${VERSION} already published on npm -- skipping"
@@ -341,6 +373,22 @@ else
       capture && /^## \[/ { exit }
       capture { print }
     ' CHANGELOG.md)
+  fi
+
+  # Guard the "forgot to rename the heading" case before the fallback fires.
+  # No `## [VERSION]` entry PLUS a non-empty `## [Unreleased]` section is the
+  # exact signature of tagging without promoting the heading. Falling through to
+  # commit subjects there publishes release notes that silently omit everything
+  # the changelog documented -- which is how v0.12.2 shipped with no entry.
+  if [ -z "$(echo "$NOTES" | tr -d '[:space:]')" ] && [ -f CHANGELOG.md ]; then
+    UNRELEASED=$(awk '
+      index($0, "## [Unreleased]") == 1 { capture=1; next }
+      capture && /^## \[/ { exit }
+      capture { print }
+    ' CHANGELOG.md)
+    if [ -n "$(echo "$UNRELEASED" | tr -d '[:space:]')" ]; then
+      fail "CHANGELOG.md has no '## [${VERSION}]' entry, but its [Unreleased] section has content. Rename that heading to '## [${VERSION}] -- $(date +%F)' before releasing -- otherwise the GitHub release notes fall back to commit subjects and drop everything documented there."
+    fi
   fi
 
   # Falls back to the commit-subject derivation if the entry is missing
@@ -470,7 +518,14 @@ SMOKE_OUTPUT=""
 SMOKE_STARTED=$(date +%s)
 SMOKE_ATTEMPTS=30
 SMOKE_SLEEP=10
-(
+# The subshell MUST run inside an `if`. Under `set -e` a bare `( ... )` that
+# exits non-zero terminates the script immediately -- `SMOKE_OK=$?` never runs
+# and the warn-only branch below is unreachable, so a slow registry turns an
+# already-successful release into "[FAIL] Release failed at line N". `set -e` is
+# suppressed for a command used as a condition, which is what we want here:
+# step 8 verifies, it does not gate.
+SMOKE_OK=0
+if (
   cd "$SMOKE_DIR"
   for i in $(seq 1 $SMOKE_ATTEMPTS); do
     if SMOKE_OUTPUT=$(npx -y "@yawlabs/npmjs-mcp@${VERSION}" --version 2>/dev/null); then
@@ -480,8 +535,11 @@ SMOKE_SLEEP=10
     sleep $SMOKE_SLEEP
   done
   exit 1
-)
-SMOKE_OK=$?
+); then
+  SMOKE_OK=0
+else
+  SMOKE_OK=1
+fi
 SMOKE_ELAPSED=$(( $(date +%s) - SMOKE_STARTED ))
 if [ "$SMOKE_OK" -eq 0 ] && [ -f "$SMOKE_DIR/.out" ]; then
   SMOKE_OUTPUT=$(cat "$SMOKE_DIR/.out")
@@ -508,17 +566,19 @@ else
   warn "git tag v${VERSION} not found"
 fi
 
-# Provenance attestation check -- npm attaches sigstore attestations when
-# `npm publish --provenance` runs inside GitHub Actions (which is our CI path).
-# A missing attestation is not fatal for local runs (we publish without
-# --provenance there), but in CI it means something regressed.
-if [ "$IS_CI" = "true" ]; then
-  ATTEST=$(npm view "@yawlabs/npmjs-mcp@${VERSION}" dist.attestations.provenance.predicateType 2>/dev/null || echo "")
-  if [ -n "$ATTEST" ]; then
-    info "provenance attestation: $ATTEST"
-  else
-    warn "no provenance attestation found on v${VERSION} (expected in CI publish)"
-  fi
+# Provenance attestation check. npm attaches a sigstore attestation only when
+# `npm publish --provenance` runs somewhere that can mint an OIDC token -- in
+# practice, GitHub Actions. Check unconditionally rather than only under CI: on
+# the workstation path the answer is "none", and that is exactly the fact worth
+# surfacing (see the note in step 5). Warn-only either way; the publish already
+# happened by the time we get here.
+ATTEST=$(npm view "@yawlabs/npmjs-mcp@${VERSION}" dist.attestations.provenance.predicateType 2>/dev/null || echo "")
+if [ -n "$ATTEST" ]; then
+  info "provenance attestation: $ATTEST"
+elif [ "$IS_CI" = "true" ]; then
+  warn "no provenance attestation found on v${VERSION} (expected on a CI publish -- --provenance may have been dropped)"
+else
+  warn "v${VERSION} published WITHOUT a provenance attestation. Expected for a workstation publish: --provenance needs CI OIDC, and this repo has no release workflow (removed in b2c256c). Restore a CI publish job or an npm Trusted Publisher to get attested releases back."
 fi
 
 # =============================================================================

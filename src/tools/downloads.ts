@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { downloadsGet, encPkg, validatePackageName } from "../api.js";
+import { downloadsGet, encPkg, validatePackageName, validatePeriod } from "../api.js";
 import { translateError } from "../errors.js";
 
 export const downloadTools = [
@@ -23,6 +23,11 @@ export const downloadTools = [
     }),
     handler: async (input: { name: string; period?: string }) => {
       const period = input.period ?? "last-week";
+      // The period is interpolated into the request PATH, so validate it here --
+      // an unchecked value can re-point the call at an unrelated endpoint.
+      const periodErr = validatePeriod(period);
+      if (periodErr) return { ok: false, status: 400, error: periodErr };
+
       const res = await downloadsGet(`/downloads/point/${period}/${encPkg(input.name)}`);
       return res.ok ? res : translateError(res, { pkg: input.name, op: `downloads ${period}` });
     },
@@ -46,6 +51,9 @@ export const downloadTools = [
     }),
     handler: async (input: { name: string; period?: string }) => {
       const period = input.period ?? "last-month";
+      const periodErr = validatePeriod(period);
+      if (periodErr) return { ok: false, status: 400, error: periodErr };
+
       const res = await downloadsGet(`/downloads/range/${period}/${encPkg(input.name)}`);
       return res.ok ? res : translateError(res, { pkg: input.name, op: `downloads_range ${period}` });
     },
@@ -68,6 +76,8 @@ export const downloadTools = [
     }),
     handler: async (input: { packages: string[]; period?: string }) => {
       const period = input.period ?? "last-week";
+      const periodErr = validatePeriod(period);
+      if (periodErr) return { ok: false, status: 400, error: periodErr };
 
       // Validate all names before any network call so a malformed name returns
       // a clean 400 rather than an uncaught throw from encPkg.
@@ -110,6 +120,9 @@ export const downloadTools = [
     }),
     handler: async (input: { name: string; period?: string }) => {
       const period = input.period ?? "last-week";
+      const periodErr = validatePeriod(period);
+      if (periodErr) return { ok: false, status: 400, error: periodErr };
+
       const res = await downloadsGet(`/versions/${encPkg(input.name)}/${period}`);
       return res.ok ? res : translateError(res, { pkg: input.name, op: `version_downloads ${period}` });
     },

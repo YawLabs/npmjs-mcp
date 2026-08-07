@@ -203,55 +203,68 @@ export const writeTools = [
       const authErr = requireAuth();
       if (authErr) return authErr;
 
-      const pRes = await fetchPackument(input.name);
-      if (!pRes.ok) return translateError(pRes, { pkg: input.name, op: "undeprecate (fetch)" });
-
-      const packument = pRes.data as Packument;
-      const allVersions = Object.keys(packument.versions || {});
       const range = input.versionRange ?? "*";
-      const affected = versionsSatisfying(allVersions, range);
 
-      if (affected.length === 0) {
+      // CouchDB OCC: on a 409 conflict, re-fetch the packument and retry once.
+      // Same read-modify-write against the same _rev as npm_deprecate, so it
+      // races the same way and needs the same retry.
+      for (let attempt = 0; attempt <= 1; attempt++) {
+        const pRes = await fetchPackument(input.name);
+        if (!pRes.ok) return translateError(pRes, { pkg: input.name, op: "undeprecate (fetch)" });
+
+        const packument = pRes.data as Packument;
+        const allVersions = Object.keys(packument.versions || {});
+        const affected = versionsSatisfying(allVersions, range);
+
+        if (affected.length === 0) {
+          return {
+            ok: false,
+            status: 400,
+            error: `No versions match range '${range}' for ${input.name}.`,
+          };
+        }
+
+        if (!packument._rev) {
+          return {
+            ok: false,
+            status: 500,
+            error: `Packument for ${input.name} missing _rev -- cannot undeprecate. Try again; this is usually transient.`,
+          };
+        }
+
+        for (const v of affected) {
+          packument.versions[v].deprecated = "";
+        }
+
+        // Couch metadata must not be echoed back -- mirrors the unpublish flow.
+        delete packument._revisions;
+        delete packument._attachments;
+
+        // Full packument PUT -- intentional, matches deprecate. Minimal-body PUT
+        // (only _id/_rev/versions) is the future optimization; not applied here.
+        const putRes = await registryPutAuth(
+          `/${encPkg(input.name)}/-rev/${encodeURIComponent(packument._rev)}`,
+          packument,
+        );
+
+        // 409 = CouchDB OCC conflict (a concurrent write beat us). Re-fetch and
+        // re-apply the mutation on the next iteration. Only one retry.
+        if (putRes.status === 409 && attempt === 0) continue;
+        if (!putRes.ok) return translateError(putRes, { pkg: input.name, op: "undeprecate (write)" });
+
         return {
-          ok: false,
-          status: 400,
-          error: `No versions match range '${range}' for ${input.name}.`,
+          ok: true,
+          status: 200,
+          data: {
+            package: input.name,
+            affectedVersions: affected,
+            totalAffected: affected.length,
+          },
         };
       }
 
-      for (const v of affected) {
-        packument.versions[v].deprecated = "";
-      }
-
-      if (!packument._rev) {
-        return {
-          ok: false,
-          status: 500,
-          error: `Packument for ${input.name} missing _rev -- cannot undeprecate. Try again; this is usually transient.`,
-        };
-      }
-
-      // Couch metadata must not be echoed back -- mirrors the unpublish flow.
-      delete packument._revisions;
-      delete packument._attachments;
-
-      // Full packument PUT -- intentional, matches deprecate. Minimal-body PUT
-      // (only _id/_rev/versions) is the future optimization; not applied here.
-      const putRes = await registryPutAuth(
-        `/${encPkg(input.name)}/-rev/${encodeURIComponent(packument._rev)}`,
-        packument,
-      );
-      if (!putRes.ok) return translateError(putRes, { pkg: input.name, op: "undeprecate (write)" });
-
-      return {
-        ok: true,
-        status: 200,
-        data: {
-          package: input.name,
-          affectedVersions: affected,
-          totalAffected: affected.length,
-        },
-      };
+      // Unreachable -- loop always returns or continues within bounds.
+      return { ok: false, status: 409, error: "Conflict after OCC retry -- try again." };
     },
   },
 
@@ -591,9 +604,12 @@ export const writeTools = [
       "Add a user as a maintainer of a package. They will have publish and write permissions. " +
       "Resolves the user's email via /-/user/ (no need to supply it). Use npm_collaborators to verify before adding.",
     annotations: {
+      // Additive: appends to `maintainers`, removes nobody. Per the MCP spec
+      // destructiveHint means "may perform destructive updates" -- flagging an
+      // append as destructive makes hosts that gate on the hint over-prompt.
       title: "Add package owner",
       readOnlyHint: false,
-      destructiveHint: true,
+      destructiveHint: false,
       idempotentHint: true,
       openWorldHint: true,
     },
@@ -621,7 +637,12 @@ export const writeTools = [
       const packument = pRes.data as Packument;
       const owners = packument.maintainers || [];
 
-      if (owners.some((m) => m.name === userRecord.name)) {
+      // Case-insensitive, matching npm_owner_remove. npm usernames are
+      // case-insensitive, and the packument's maintainer entry can differ in
+      // case from the canonical record /-/user just returned -- a
+      // case-sensitive check reads that as "not an owner" and appends a
+      // duplicate maintainer for the same person.
+      if (owners.some((m) => m.name.toLowerCase() === userRecord.name.toLowerCase())) {
         return {
           ok: true,
           status: 200,
@@ -933,9 +954,10 @@ export const writeTools = [
     name: "npm_team_create",
     description: "Create a team inside an organization. Team is passed as '@scope:team'.",
     annotations: {
+      // Additive: creates a team, touches nothing existing.
       title: "Create team",
       readOnlyHint: false,
-      destructiveHint: true,
+      destructiveHint: false,
       idempotentHint: false,
       openWorldHint: true,
     },
@@ -1016,9 +1038,10 @@ export const writeTools = [
     name: "npm_team_member_add",
     description: "Add a user to a team. Team is '@scope:team'. User must already be in the org.",
     annotations: {
+      // Additive: adds a member, removes nobody.
       title: "Add team member",
       readOnlyHint: false,
-      destructiveHint: true,
+      destructiveHint: false,
       idempotentHint: true,
       openWorldHint: true,
     },
@@ -1094,7 +1117,10 @@ export const writeTools = [
     name: "npm_org_member_set",
     description:
       "Add a user to an org or change their role. Roles: 'developer', 'admin', 'owner'. " +
-      "If user is already in the org, updates the role. Omit role to keep existing role.",
+      "If the user is already in the org, updates the role. Omitting `role` keeps the member's current role: " +
+      "this tool reads the roster first and re-sends the existing role explicitly, because the registry " +
+      "DEFAULTS an omitted role to 'developer' rather than preserving it (which would silently demote an " +
+      "admin or owner). For a user who is not yet a member, omitting `role` adds them as 'developer'.",
     annotations: {
       title: "Set org member",
       readOnlyHint: false,
@@ -1130,17 +1156,63 @@ export const writeTools = [
       // The body `user` field and response data still strip '@' for clean output.
       const userBare = input.user.replace(/^@/, "");
       const orgBare = input.org.replace(/^@/, "");
+
+      // Resolve the role to SEND, which is not the same as the role the caller
+      // passed. A body with no `role` does NOT mean "leave the current role
+      // alone": the registry membership spec defines the field as
+      // "defaults to 'developer' if not given", and the npm CLI never exercises
+      // the omitted case because it fills the same default itself
+      // (lib/commands/org.js: `role = role || 'developer'`). Sending a bare
+      // `{ user }` for an existing admin or owner therefore DEMOTES them.
+      //
+      // So when the caller omits `role`, read the roster and re-send whatever
+      // the member already has. That makes "omit to keep the current role" --
+      // the behaviour this tool advertises -- actually true.
+      let role: string | undefined = input.role;
+      let rolePreserved = false;
+      if (!role) {
+        const rosterRes = await registryGetAuth<Record<string, string>>(`/-/org/${encScope(input.org)}/user`);
+        if (!rosterRes.ok) {
+          return {
+            ok: false,
+            status: rosterRes.status,
+            error:
+              `Could not read the ${orgBare} roster to determine ${userBare}'s current role (HTTP ${rosterRes.status}), ` +
+              `and sending no role would default them to 'developer' -- demoting them if they are an admin or owner. ` +
+              `Re-run with an explicit \`role\`, or retry once /-/org/${orgBare}/user is reachable. Raw: ${rosterRes.error}`,
+          };
+        }
+        const existing = Object.entries(rosterRes.data ?? {}).find(
+          ([member]) => member.toLowerCase() === userBare.toLowerCase(),
+        );
+        if (existing) {
+          role = existing[1];
+          rolePreserved = true;
+        }
+        // Not currently a member: leave `role` undefined and let the registry
+        // apply its documented 'developer' default for the new membership.
+      }
+
       const body: { user: string; role?: string } = { user: userBare };
-      if (input.role) body.role = input.role;
+      if (role) body.role = role;
 
       const res = await registryPutAuth(`/-/org/${encScope(input.org)}/user`, body);
       if (!res.ok) return translateError(res, { op: `org_member_set ${orgBare}/${userBare}` });
 
-      // Only include role in the response when it was explicitly set -- omitting
-      // `role` means "keep existing role", and the server-side value is not
-      // echoed in the PUT response, so we cannot accurately report it.
-      const data: Record<string, unknown> = { org: orgBare, user: userBare };
-      if (input.role) data.role = input.role;
+      // The effective role is now always known: either the caller's, the one we
+      // read back off the roster, or the registry's documented default for a
+      // brand-new member.
+      const data: Record<string, unknown> = {
+        org: orgBare,
+        user: userBare,
+        role: role ?? "developer",
+      };
+      if (rolePreserved) {
+        data.rolePreserved = true;
+        data.note = `No role was passed; kept ${userBare}'s existing role ('${role}') by sending it explicitly.`;
+      } else if (!input.role) {
+        data.note = `${userBare} was not an existing member; added with the registry default role ('developer').`;
+      }
       return { ok: true, status: 200, data };
     },
   },

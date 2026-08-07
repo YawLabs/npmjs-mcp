@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { encUser, registryGetAuth, requireAuth, validateUsername } from "../api.js";
-import { translateError } from "../errors.js";
+import { emptyBodyError, translateError } from "../errors.js";
 import type { TokenListResponse, UserProfile } from "../types.js";
 
 export const authTools = [
@@ -42,8 +42,9 @@ export const authTools = [
 
       const res = await registryGetAuth<UserProfile>("/-/npm/v1/user");
       if (!res.ok) return translateError(res, { op: "profile" });
+      if (!res.data) return emptyBodyError({ op: "profile" });
 
-      const p = res.data!;
+      const p = res.data;
       // `pending: true` means a 2FA enrollment was started but not completed —
       // protection is not yet in force. Match the reading used in workflows.ts
       // (npm_check_auth / npm_publish_preflight): `enabled` iff `tfa && !pending`.
@@ -103,14 +104,16 @@ export const authTools = [
       const path = `/-/npm/v1/tokens${qs ? `?${qs}` : ""}`;
       const res = await registryGetAuth<TokenListResponse>(path);
       if (!res.ok) return translateError(res, { op: "tokens" });
+      if (!res.data) return emptyBodyError({ op: "tokens" });
 
-      const data = res.data!;
+      const data = res.data;
+      const objects = Array.isArray(data.objects) ? data.objects : [];
       return {
         ok: true,
         status: 200,
         data: {
-          total: data.total,
-          tokens: data.objects.map((t) => ({
+          total: data.total ?? objects.length,
+          tokens: objects.map((t) => ({
             key: t.key,
             readonly: t.readonly,
             // Surface token class + automation flag so callers can tell automation
@@ -222,7 +225,7 @@ export const authTools = [
       );
       if (!res.ok) return translateError(res, { op: `user_packages ${input.username}` });
 
-      const packages = Object.entries(res.data!).map(([name, access]) => ({ name, access }));
+      const packages = Object.entries(res.data ?? {}).map(([name, access]) => ({ name, access }));
       return {
         ok: true,
         status: 200,

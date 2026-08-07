@@ -98,16 +98,68 @@ describe("Tool definitions", () => {
         assert.equal(typeof tool.annotations.openWorldHint, "boolean", `Tool ${tool.name} missing openWorldHint`);
       });
 
-      it("read-only vs destructive hints are consistent", () => {
-        // readOnlyHint and destructiveHint must be opposites.
-        assert.notEqual(
-          tool.annotations.readOnlyHint,
-          tool.annotations.destructiveHint,
-          `Tool ${tool.name} readOnlyHint (${tool.annotations.readOnlyHint}) and destructiveHint (${tool.annotations.destructiveHint}) must be opposites`,
-        );
+      it("a read-only tool is never marked destructive", () => {
+        // The MCP spec scopes destructiveHint to tools that are NOT read-only,
+        // where it means "may perform destructive updates". So the real
+        // invariant is one-directional: readOnly implies non-destructive.
+        //
+        // The previous assertion required the two to be strict opposites, which
+        // forced every write tool to claim destructiveHint: true -- including
+        // purely additive ones (npm_owner_add, npm_team_create,
+        // npm_team_member_add, npm_hook_add) that remove nothing. Hosts that
+        // gate confirmation on the hint then over-prompt on safe operations,
+        // which trains users to click through the prompts that matter.
+        if (tool.annotations.readOnlyHint) {
+          assert.equal(
+            tool.annotations.destructiveHint,
+            false,
+            `Tool ${tool.name} is readOnlyHint: true, so destructiveHint must be false`,
+          );
+        }
       });
     });
   }
+});
+
+describe("Destructive annotations", () => {
+  // Pins the classification so a new write tool has to make a deliberate call,
+  // and so a future refactor can't quietly re-flag the additive ops as
+  // destructive (or, worse, de-flag a genuinely destructive one).
+  const ADDITIVE_WRITES = [
+    "npm_owner_add",
+    "npm_team_create",
+    "npm_team_member_add",
+    "npm_hook_add",
+  ];
+
+  for (const name of ADDITIVE_WRITES) {
+    it(`${name} is a write but not destructive`, () => {
+      const tool = allTools.find((t) => t.name === name);
+      assert.ok(tool, `${name} not found`);
+      assert.equal(tool!.annotations.readOnlyHint, false, `${name} should be a write`);
+      assert.equal(tool!.annotations.destructiveHint, false, `${name} only adds; it must not claim destructiveness`);
+    });
+  }
+
+  it("every irreversible op is still marked destructive", () => {
+    const IRREVERSIBLE = [
+      "npm_unpublish_version",
+      "npm_unpublish_package",
+      "npm_deprecate",
+      "npm_owner_remove",
+      "npm_team_delete",
+      "npm_team_member_remove",
+      "npm_org_member_remove",
+      "npm_token_revoke",
+      "npm_hook_remove",
+      "npm_dist_tag_remove",
+    ];
+    for (const name of IRREVERSIBLE) {
+      const tool = allTools.find((t) => t.name === name);
+      assert.ok(tool, `${name} not found`);
+      assert.equal(tool!.annotations.destructiveHint, true, `${name} must stay destructiveHint: true`);
+    }
+  });
 });
 
 describe("Tool modules export correct counts", () => {

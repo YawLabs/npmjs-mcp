@@ -139,6 +139,46 @@ describe("translateError", () => {
     assert.equal(out.ok, true);
     assert.deepEqual(out.data, { x: 1 });
   });
+
+  // The four branches below are what a caller sees precisely when the registry
+  // is misbehaving. They were the untested half of translateError.
+
+  it("429 says the retry budget was already spent, so the caller waits rather than hammering", () => {
+    const out = translateError({ ok: false, status: 429, error: "Too Many Requests" }, { op: "deprecate" });
+    assert.equal(out.ok, false);
+    assert.match(out.error!, /Rate limited/);
+    assert.match(out.error!, /Retried automatically and still failed/);
+    assert.match(out.error!, /during deprecate/);
+  });
+
+  it("409 explains the read-write race and that re-running re-reads _rev", () => {
+    const out = translateError({ ok: false, status: 409, error: "Conflict" }, { pkg: "@test/pkg", op: "deprecate" });
+    assert.match(out.error!, /Version conflict/);
+    assert.match(out.error!, /concurrent publish/);
+    assert.match(out.error!, /re-fetches the current _rev/);
+  });
+
+  it("status 0 is reported as a network error, not an HTTP failure", () => {
+    const out = translateError({ ok: false, status: 0, error: "fetch failed" }, { op: "whoami" });
+    assert.match(out.error!, /Network error/);
+    assert.match(out.error!, /Could not reach the registry/);
+    // Must not be mistaken for a server-side fault.
+    assert.equal(/Registry server error/.test(out.error!), false);
+  });
+
+  it("5xx points at the status page and preserves the code", () => {
+    for (const status of [500, 502, 503]) {
+      const out = translateError({ ok: false, status, error: "boom" }, { pkg: "@test/pkg" });
+      assert.match(out.error!, /Registry server error/, `status ${status}`);
+      assert.match(out.error!, new RegExp(`HTTP ${status}`));
+      assert.match(out.error!, /status\.npmjs\.org/);
+    }
+  });
+
+  it("leaves an unrecognized 4xx untouched rather than inventing guidance", () => {
+    const out = translateError({ ok: false, status: 418, error: "teapot" }, { pkg: "@test/pkg" });
+    assert.equal(out.error, "teapot");
+  });
 });
 
 describe("validateDeprecationMessage", () => {
@@ -409,6 +449,57 @@ describe("npm_undeprecate", () => {
       assert.equal(putBody.versions[v].deprecated, "");
     }
   });
+
+  it("retries once on 409 from PUT (CouchDB OCC): re-fetches and re-applies the clear", async () => {
+    // Same full-packument read-modify-write as npm_deprecate, so it loses the
+    // same race against a concurrent publish. npm_deprecate's 409 retry is
+    // pinned; this one was added later and had no coverage.
+    const deprecated = {
+      versions: {
+        "0.1.0": { name: "@test/pkg", version: "0.1.0", deprecated: "old" },
+        "1.0.0": { name: "@test/pkg", version: "1.0.0", deprecated: "old" },
+      },
+    };
+    mockFetchSequence([
+      { status: 200, body: samplePackument({ ...deprecated, _rev: "1-abc" }) },
+      { status: 409, body: { error: "Conflict" } },
+      { status: 200, body: samplePackument({ ...deprecated, _rev: "2-def" }) },
+      { status: 200, body: {} },
+    ]);
+    const tool = findTool(writeTools, "npm_undeprecate");
+    const result = (await tool.handler({ name: "@test/pkg" })) as {
+      ok: boolean;
+      data: { totalAffected: number };
+    };
+    assert.equal(result.ok, true);
+    assert.equal(requests.length, 4);
+    assert.deepEqual(
+      requests.map((r) => r.method),
+      ["GET", "PUT", "GET", "PUT"],
+    );
+    // The retry must use the fresh rev, not the stale one.
+    assert.match(requests[3].url, /\/-rev\/2-def$/);
+    assert.equal(result.data.totalAffected, 2);
+  });
+
+  it("surfaces a translated 409 when the conflict survives the single retry", async () => {
+    mockFetchSequence([
+      { status: 200, body: samplePackument({ _rev: "1-abc" }) },
+      { status: 409, body: { error: "Conflict" } },
+      { status: 200, body: samplePackument({ _rev: "2-def" }) },
+      { status: 409, body: { error: "Conflict" } },
+    ]);
+    const tool = findTool(writeTools, "npm_undeprecate");
+    const result = (await tool.handler({ name: "@test/pkg" })) as {
+      ok: boolean;
+      status: number;
+      error: string;
+    };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 409);
+    assert.match(result.error, /Version conflict/);
+    assert.equal(requests.length, 4, "exactly one retry, then give up");
+  });
 });
 
 // ─── npm_unpublish_version ───
@@ -612,6 +703,122 @@ describe("npm_unpublish_version", () => {
     })) as { ok: boolean; status: number };
     assert.equal(result.ok, false);
     assert.equal(result.status, 404);
+  });
+
+  it("removes a non-latest dist-tag pointing at the version and does NOT reassign it", async () => {
+    // Documented behaviour: any tag aimed at the unpublished version is dropped,
+    // but only `latest` is recomputed -- `next`/`beta` are left unset for the
+    // caller to reassign. Every other test drives the `latest` path, so the
+    // documented half of this irreversible operation was unverified.
+    const pkg = samplePackument({
+      "dist-tags": { latest: "1.0.0", next: "0.2.0", beta: "0.2.0" },
+      versions: {
+        "0.1.0": { name: "@test/pkg", version: "0.1.0" },
+        "0.2.0": {
+          name: "@test/pkg",
+          version: "0.2.0",
+          dist: { tarball: "https://registry.npmjs.org/@test/pkg/-/pkg-0.2.0.tgz" },
+        },
+        "1.0.0": { name: "@test/pkg", version: "1.0.0" },
+      },
+    });
+    mockFetchSequence([
+      { status: 200, body: pkg },
+      { status: 200, body: {} },
+      { status: 200, body: { ...pkg, _rev: "2-def" } },
+      { status: 200, body: {} },
+    ]);
+    const tool = findTool(writeTools, "npm_unpublish_version");
+    const result = (await tool.handler({ name: "@test/pkg", version: "0.2.0", confirm: true })) as { ok: boolean };
+    assert.equal(result.ok, true);
+    const putTags = (requests[1].body as { "dist-tags": Record<string, string> })["dist-tags"];
+    assert.ok(!("next" in putTags), "next pointed at the removed version and must be dropped");
+    assert.ok(!("beta" in putTags), "beta pointed at the removed version and must be dropped");
+    // latest pointed elsewhere, so it is untouched.
+    assert.equal(putTags.latest, "1.0.0");
+  });
+
+  it("skips the tarball DELETE when the tarball origin differs from the configured registry", async () => {
+    // Under a proxy registry (Verdaccio/Nexus) the tarball URL can point at a
+    // different host. DELETEing there is a no-op at best and destructive at
+    // worst, so the handler must skip it and report the reason.
+    process.env.NPM_REGISTRY = "https://registry.internal.example";
+    try {
+      const pkg = samplePackument({
+        versions: {
+          "0.1.0": {
+            name: "@test/pkg",
+            version: "0.1.0",
+            // Origin deliberately does NOT match NPM_REGISTRY.
+            dist: { tarball: "https://registry.npmjs.org/@test/pkg/-/pkg-0.1.0.tgz" },
+          },
+          "1.0.0": { name: "@test/pkg", version: "1.0.0" },
+        },
+      });
+      mockFetchSequence([
+        { status: 200, body: pkg },
+        { status: 200, body: {} },
+        { status: 200, body: { ...pkg, _rev: "2-def" } },
+      ]);
+      const tool = findTool(writeTools, "npm_unpublish_version");
+      const result = (await tool.handler({ name: "@test/pkg", version: "0.1.0", confirm: true })) as {
+        ok: boolean;
+        data: { complete: boolean; tarballDeleted: boolean; tarballWarning?: string };
+      };
+      assert.equal(result.ok, true);
+      assert.equal(result.data.tarballDeleted, false);
+      assert.equal(result.data.complete, false);
+      assert.match(result.data.tarballWarning ?? "", /does not match registry origin/);
+      // GET, PUT, GET(fresh rev) -- and crucially no DELETE.
+      assert.equal(requests.length, 3);
+      assert.equal(
+        requests.some((r) => r.method === "DELETE"),
+        false,
+        "must not DELETE against a foreign origin",
+      );
+    } finally {
+      delete process.env.NPM_REGISTRY;
+    }
+  });
+
+  it("reports complete:false when the fresh-rev re-fetch fails before the tarball DELETE", async () => {
+    // The packument PUT already succeeded, so the version is delisted -- but
+    // without a fresh _rev the tarball stays live on the CDN. Callers need to
+    // see that partial state rather than a flat success.
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    try {
+      const pkg = samplePackument({
+        versions: {
+          "0.1.0": {
+            name: "@test/pkg",
+            version: "0.1.0",
+            dist: { tarball: "https://registry.npmjs.org/@test/pkg/-/pkg-0.1.0.tgz" },
+          },
+          "1.0.0": { name: "@test/pkg", version: "1.0.0" },
+        },
+      });
+      mockFetchSequence([
+        { status: 200, body: pkg }, // GET packument
+        { status: 200, body: {} }, // PUT succeeds -- version is now delisted
+        { status: 500, body: "boom" }, // re-GET for the fresh rev fails
+      ]);
+      const tool = findTool(writeTools, "npm_unpublish_version");
+      const result = (await tool.handler({ name: "@test/pkg", version: "0.1.0", confirm: true })) as {
+        ok: boolean;
+        data: { complete: boolean; tarballDeleted: boolean; tarballWarning?: string };
+      };
+      assert.equal(result.ok, true);
+      assert.equal(result.data.tarballDeleted, false);
+      assert.equal(result.data.complete, false);
+      assert.match(result.data.tarballWarning ?? "", /could not re-fetch packument/);
+      assert.equal(
+        requests.some((r) => r.method === "DELETE"),
+        false,
+        "no rev means no DELETE can be attempted",
+      );
+    } finally {
+      delete process.env.NPM_RETRY_BACKOFF_MS;
+    }
   });
 });
 
@@ -829,7 +1036,12 @@ describe("npm_org_member_set", () => {
   });
 
   it("strips leading @ from org and user", async () => {
-    mockFetch(200, {});
+    // No role passed -> the handler reads the roster first, then PUTs. bob is
+    // not on this roster, so no role is sent and the registry default applies.
+    mockFetchSequence([
+      { status: 200, body: {} },
+      { status: 200, body: {} },
+    ]);
     const tool = findTool(writeTools, "npm_org_member_set");
     await tool.handler({ org: "yawlabs", user: "@bob", confirm: true });
     assert.deepEqual(lastRequest!.body, { user: "bob" });
@@ -844,15 +1056,79 @@ describe("npm_org_member_set", () => {
     assert.equal(result.data.role, "admin");
   });
 
-  it("response omits role when it was not set (server keeps existing role)", async () => {
-    mockFetch(200, {});
+  it("omitting role preserves an existing member's role by re-sending it explicitly", async () => {
+    // The registry membership spec defines `role` as "defaults to 'developer'
+    // if not given" -- it does NOT preserve. The npm CLI never hits that path
+    // because it fills the same default itself (lib/commands/org.js:
+    // `role = role || 'developer'`). So a bare { user } body silently demotes
+    // an admin to developer. The handler must read the roster and send the
+    // existing role back.
+    mockFetchSequence([
+      { status: 200, body: { alice: "owner", bob: "admin" } }, // roster read
+      { status: 200, body: {} }, // PUT
+    ]);
     const tool = findTool(writeTools, "npm_org_member_set");
     const result = (await tool.handler({ org: "yawlabs", user: "bob", confirm: true })) as {
       data: Record<string, unknown>;
     };
-    assert.ok(!("role" in result.data), "role should be omitted from data when not specified");
-    assert.equal(result.data.org, "yawlabs");
-    assert.equal(result.data.user, "bob");
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].method, "GET");
+    assert.match(requests[0].url, /\/-\/org\/yawlabs\/user$/);
+    assert.equal(requests[1].method, "PUT");
+    // The critical assertion: role is present and matches what bob already had.
+    assert.deepEqual(requests[1].body, { user: "bob", role: "admin" });
+    assert.equal(result.data.role, "admin");
+    assert.equal(result.data.rolePreserved, true);
+  });
+
+  it("matches the roster entry case-insensitively when preserving a role", async () => {
+    mockFetchSequence([
+      { status: 200, body: { Bob: "owner" } },
+      { status: 200, body: {} },
+    ]);
+    const tool = findTool(writeTools, "npm_org_member_set");
+    await tool.handler({ org: "yawlabs", user: "bob", confirm: true });
+    assert.deepEqual(requests[1].body, { user: "bob", role: "owner" });
+  });
+
+  it("omitting role for a non-member sends no role and reports the registry default", async () => {
+    mockFetchSequence([
+      { status: 200, body: { alice: "owner" } }, // bob absent
+      { status: 200, body: {} },
+    ]);
+    const tool = findTool(writeTools, "npm_org_member_set");
+    const result = (await tool.handler({ org: "yawlabs", user: "bob", confirm: true })) as {
+      data: Record<string, unknown>;
+    };
+    assert.deepEqual(requests[1].body, { user: "bob" });
+    assert.equal(result.data.role, "developer");
+    assert.ok(!("rolePreserved" in result.data));
+  });
+
+  it("fails closed instead of demoting when the roster read fails", async () => {
+    // If we cannot learn the current role, PUTting a role-less body would
+    // default the member to 'developer'. Refuse rather than risk the demotion.
+    mockFetchSequence([{ status: 403, body: { error: "Forbidden" } }]);
+    const tool = findTool(writeTools, "npm_org_member_set");
+    const result = (await tool.handler({ org: "yawlabs", user: "bob", confirm: true })) as {
+      ok: boolean;
+      status: number;
+      error: string;
+    };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 403);
+    assert.match(result.error, /demoting them/);
+    // Only the roster GET fired -- no PUT.
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].method, "GET");
+  });
+
+  it("skips the roster read entirely when role is passed explicitly", async () => {
+    mockFetchSequence([{ status: 200, body: {} }]);
+    const tool = findTool(writeTools, "npm_org_member_set");
+    await tool.handler({ org: "yawlabs", user: "bob", role: "developer", confirm: true });
+    assert.equal(requests.length, 1, "explicit role needs no roster lookup");
+    assert.equal(requests[0].method, "PUT");
   });
 
   it("requires confirm: true", async () => {
@@ -1064,6 +1340,26 @@ describe("npm_owner_add", () => {
     assert.equal(requests.filter((r) => r.method === "PUT").length, 0);
     // Maintainers list must be exactly ["alice"] -- no duplication.
     assert.deepEqual(result.data.maintainers, ["alice"]);
+  });
+
+  it("treats a case-differing maintainer entry as already-owner instead of appending a duplicate", async () => {
+    // npm usernames are case-insensitive, and the packument's stored entry can
+    // differ in case from the canonical record /-/user returns. A
+    // case-sensitive check reads that as "not an owner" and adds the same
+    // person twice.
+    mockFetchSequence([
+      { status: 200, body: { name: "Alice", email: "alice@test.com" } }, // canonical record
+      { status: 200, body: samplePackument({ maintainers: [{ name: "alice", email: "alice@test.com" }] }) },
+    ]);
+    const tool = findTool(writeTools, "npm_owner_add");
+    const result = (await tool.handler({ name: "@test/pkg", username: "Alice" })) as {
+      ok: boolean;
+      data: { alreadyOwner: boolean; maintainers: string[] };
+    };
+    assert.equal(result.ok, true);
+    assert.equal(result.data.alreadyOwner, true);
+    assert.deepEqual(result.data.maintainers, ["alice"], "no duplicate entry");
+    assert.equal(requests.filter((r) => r.method === "PUT").length, 0, "nothing to write");
   });
 
   // ─── GAP 4: user-resolve step 404s for a nonexistent user (writes.ts:572-575) ───

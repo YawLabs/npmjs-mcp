@@ -179,7 +179,7 @@ Use the same JSON block shown above in any of these.
 
 These bypass the CLI/2FA friction that makes `npm deprecate` and friends fail locally. All use the HTTP API with your `NPM_TOKEN`.
 
-- **npm_deprecate** — Deprecate a package or specific versions (validates message format).
+- **npm_deprecate** — Deprecate a package or specific versions (enforces the registry's 1024-char message limit; message punctuation is not constrained).
 - **npm_undeprecate** — Clear deprecation.
 - **npm_unpublish_version** — Unpublish a version. Requires `confirm: true`.
 - **npm_unpublish_package** — Unpublish an entire package. Requires `confirm: true`.
@@ -208,7 +208,7 @@ These bypass the CLI/2FA friction that makes `npm deprecate` and friends fail lo
 |---|---|---|
 | Read (search/view/stats) | These MCP tools, no auth | Fast, zero friction |
 | Deprecate / dist-tag / owner / team / hook | `npm_deprecate`, `npm_dist_tag_*`, etc. | HTTP API, no CLI 2FA friction |
-| Publish | CI tag-push workflow | Version discipline, provenance, org token |
+| Publish | `bash release.sh X.Y.Z` from the workstation | This repo has no CI release workflow (removed in b2c256c). Note: workstation publishes carry no sigstore provenance — `--provenance` needs CI OIDC. |
 | Unpublish | `npm_unpublish_version` (with `confirm: true`) | Safer than CLI; irreversible within 72h |
 | CLI fallback (rare) | `npm login --auth-type=web` then `npm <op>` | Only if MCP returns 422 |
 
@@ -220,8 +220,15 @@ Call `npm_ops_playbook` at the start of any session to get the up-to-date matrix
 
 ```
 > "What vulnerabilities does lodash 4.17.20 have and what's the fix?"
-→ npm_audit_deep({ name: "lodash", version: "4.17.20" })
+→ npm_audit_deep({
+    name: "my-project",              // the PROJECT being audited, not the dependency
+    version: "1.0.0",
+    dependencies: { lodash: "4.17.20" }   // required — the set to audit
+  })
 ```
+
+For a quick check across several packages at once, `npm_audit` takes the
+name-to-versions map directly: `npm_audit({ packages: { lodash: ["4.17.20"] } })`.
 
 ### Deprecate a package
 

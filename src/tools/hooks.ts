@@ -89,9 +89,10 @@ export const hookTools = [
       "or '~user' for a user's packages. Endpoint is the HTTPS URL to POST events to; " +
       "secret is used to HMAC-sign payloads. The secret is never echoed back in tool responses.",
     annotations: {
+      // Additive: registers a new hook, modifies no existing one.
       title: "Add webhook",
       readOnlyHint: false,
-      destructiveHint: true,
+      destructiveHint: false,
       idempotentHint: false,
       openWorldHint: true,
     },
@@ -194,7 +195,10 @@ export const hookTools = [
 
   {
     name: "npm_hook_update",
-    description: "Update a webhook's endpoint and/or secret. The returned hook object has the secret redacted.",
+    description:
+      "Replace a webhook's endpoint AND signing secret. Both are required: the registry PUT overwrites the " +
+      "hook config, so this call always rotates the secret to whatever you pass — supply the current secret " +
+      "if you only mean to change the endpoint. The returned hook object has the secret redacted.",
     annotations: {
       title: "Update webhook",
       readOnlyHint: false,
@@ -204,8 +208,10 @@ export const hookTools = [
     },
     inputSchema: z.object({
       id: z.string().describe("Hook ID"),
-      endpoint: httpsEndpoint.describe("New HTTPS URL"),
-      secret: z.string().describe("New signing secret"),
+      endpoint: httpsEndpoint.describe("HTTPS URL for the hook (required — the PUT replaces the whole config)"),
+      secret: z
+        .string()
+        .describe("Signing secret to store. Always written; pass the existing secret to leave it effectively unchanged."),
     }),
     handler: async (input: { id: string; endpoint: string; secret: string }) => {
       const authErr = requireAuth();

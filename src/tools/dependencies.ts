@@ -1,7 +1,22 @@
 import { z } from "zod";
 import { type ApiResponse, createLimiter, encPkg, maxSatisfying, registryGet, registryGetAbbreviated } from "../api.js";
-import { translateError } from "../errors.js";
+import { emptyBodyError, translateError } from "../errors.js";
 import type { AbbreviatedPackument, VersionDoc } from "../types.js";
+
+/**
+ * Wall-clock ceiling for the fan-out tools (npm_dep_tree, npm_license_check).
+ *
+ * Both issue one request per discovered package, bounded to 10 in flight but
+ * otherwise unbounded in total. A wide tree can therefore run for minutes, and
+ * this server sends no MCP progress notifications -- so the caller sees nothing
+ * at all until it finishes. Capping the wall clock turns "hangs indefinitely"
+ * into "returns what it found, flagged `truncated`", which the response shape
+ * already accommodates via `warnings` / `unresolvedCount`.
+ *
+ * Generous on purpose: typical trees finish well inside it, so only pathological
+ * ones truncate.
+ */
+const FANOUT_BUDGET_MS = 60_000;
 
 export const dependencyTools = [
   {
@@ -23,8 +38,9 @@ export const dependencyTools = [
       const ver = input.version ?? "latest";
       const res = await registryGet<VersionDoc>(`/${encPkg(input.name)}/${ver}`);
       if (!res.ok) return translateError(res, { pkg: input.name, op: `dependencies ${ver}` });
+      if (!res.data) return emptyBodyError({ pkg: input.name, op: `dependencies ${ver}` });
 
-      const v = res.data!;
+      const v = res.data;
       return {
         ok: true,
         status: 200,
@@ -44,7 +60,9 @@ export const dependencyTools = [
   {
     name: "npm_dep_tree",
     description:
-      "Resolve the production dependency tree for a package version (up to a configurable depth). Shows the full transitive dependency graph with versions.",
+      "Resolve the production dependency tree for a package version (up to a configurable depth). Shows the full transitive dependency graph with versions. " +
+      "Issues one registry request per discovered package (10 in flight), so a wide tree at depth 4-5 can take a while; the walk is capped at 60s and returns " +
+      "`truncated: true` with a warning if it runs out of budget.",
     annotations: {
       title: "Resolve dependency tree",
       readOnlyHint: true,
@@ -71,7 +89,17 @@ export const dependencyTools = [
       // hintKeys) and inflates `unresolvedCount` to 2 for one underlying
       // failure.
       const failedPackages = new Set<string>();
-      const resolved = new Set<string>(); // "name@hint" keys already queued
+      // Memoization is keyed by package, but the traversal is depth-limited, so
+      // "already visited" is only a valid skip if the earlier visit happened at
+      // the SAME depth or shallower. A node first reached at maxDepth records
+      // its entry without expanding children; a later visit of the same node at
+      // a shallower depth (its parent's fetch resolved more slowly) would then
+      // short-circuit on the plain "seen" check and leave that subtree missing
+      // -- and since it turns on fetch-latency ordering, the same query could
+      // return different trees on different runs. Storing the depth of the
+      // visit lets a shallower arrival re-expand.
+      const visitedDepth = new Map<string, number>(); // "name@hint" -> shallowest depth seen
+      const expandedDepth = new Map<string, number>(); // "name@resolvedVersion" -> shallowest depth expanded
       // `failed: true` marks entries we couldn't fully resolve. Two failure
       // modes both land here:
       //   1. The packument fetch never returned (404/network/etc).
@@ -83,11 +111,21 @@ export const dependencyTools = [
       type TreeNode = { version: string; dependencies: Record<string, string>; failed?: true };
       const tree: Record<string, TreeNode> = {};
       const warnings: string[] = [];
+      const deadline = Date.now() + FANOUT_BUDGET_MS;
+      let truncated = false;
 
       async function resolve(name: string, versionHint: string, currentDepth: number): Promise<void> {
         const hintKey = `${name}@${versionHint}`;
-        if (resolved.has(hintKey) || currentDepth > maxDepth) return;
-        resolved.add(hintKey);
+        if (currentDepth > maxDepth) return;
+        // Stop expanding once the budget is spent. Already-resolved nodes stay
+        // in the tree; this only prevents new work from being queued.
+        if (Date.now() > deadline) {
+          truncated = true;
+          return;
+        }
+        const seenAt = visitedDepth.get(hintKey);
+        if (seenAt !== undefined && seenAt <= currentDepth) return;
+        visitedDepth.set(hintKey, currentDepth);
 
         // Share the in-flight fetch across concurrent callers. The warning is
         // pushed inside the .then so it fires exactly once per failed package
@@ -103,9 +141,15 @@ export const dependencyTools = [
           try {
             encodedName = encPkg(name);
           } catch {
-            warnings.push(`Invalid package name "${name}": skipped`);
+            // Guard the warning as well as the placeholder. This path never
+            // populates packumentCache (we return before the .set), so unlike
+            // the fetch-failure warning below it is not deduped by the shared
+            // promise -- and depth-aware memoization lets the same hintKey be
+            // re-entered at a shallower depth. An unguarded push therefore
+            // emits the identical warning once per visit.
             if (!failedPackages.has(name)) {
               failedPackages.add(name);
+              warnings.push(`Invalid package name "${name}": skipped`);
               tree[hintKey] = { version: versionHint, dependencies: {}, failed: true };
             }
             return;
@@ -147,9 +191,15 @@ export const dependencyTools = [
           resolvedVersion = matched ?? pkg["dist-tags"]?.latest ?? versionHint;
         }
 
-        // Deduplicate on resolved version (different ranges may resolve to the same version)
+        // Deduplicate on resolved version (different ranges may resolve to the
+        // same version). Depth-aware for the reason described at `expandedDepth`:
+        // skip only when this node was already expanded from an equal or
+        // shallower position, so a shallower arrival still walks the subtree the
+        // deeper one was not allowed to.
         const resolvedKey = `${name}@${resolvedVersion}`;
-        if (tree[resolvedKey]) return;
+        const expandedAt = expandedDepth.get(resolvedKey);
+        if (expandedAt !== undefined && expandedAt <= currentDepth) return;
+        expandedDepth.set(resolvedKey, currentDepth);
 
         const versionData = pkg.versions[resolvedVersion];
         if (!versionData) {
@@ -195,6 +245,12 @@ export const dependencyTools = [
       const resolvedCount = treeEntries.filter(([, v]) => !v.failed).length;
       const unresolvedCount = treeEntries.length - resolvedCount;
 
+      if (truncated) {
+        warnings.push(
+          `Traversal stopped after ${FANOUT_BUDGET_MS / 1000}s -- the tree is INCOMPLETE. Re-run with a smaller \`depth\`, or treat this as a partial result.`,
+        );
+      }
+
       return {
         ok: true,
         status: 200,
@@ -203,6 +259,9 @@ export const dependencyTools = [
           depth: maxDepth,
           totalPackages: resolvedCount,
           ...(unresolvedCount > 0 ? { unresolvedCount } : {}),
+          // Present only when the walk was cut short, so its absence means the
+          // tree is complete to the requested depth.
+          ...(truncated ? { truncated: true } : {}),
           tree,
           ...(warnings.length > 0 ? { warnings } : {}),
         },
@@ -214,7 +273,8 @@ export const dependencyTools = [
     description:
       "Check the license of a package and its direct production dependencies. Flags missing or non-standard licenses. " +
       "Matches single SPDX license identifiers case-insensitively (so 'mit' and 'MIT' both match). " +
-      "SPDX expressions like '(MIT OR Apache-2.0)' are NOT decomposed — they are flagged unless added to `allowed` verbatim.",
+      "SPDX expressions like '(MIT OR Apache-2.0)' are NOT decomposed — they are flagged unless added to `allowed` verbatim. " +
+      "Issues 2 requests per direct dependency (10 in flight), capped at 60s; deps not reached in time come back as `NOT_CHECKED` (and are flagged, never treated as allowed).",
     annotations: {
       title: "Check licenses",
       readOnlyHint: true,
@@ -236,8 +296,9 @@ export const dependencyTools = [
       const ver = input.version ?? "latest";
       const res = await registryGet<VersionDoc>(`/${encPkg(input.name)}/${ver}`);
       if (!res.ok) return translateError(res, { pkg: input.name, op: `license_check ${ver}` });
+      if (!res.data) return emptyBodyError({ pkg: input.name, op: `license_check ${ver}` });
 
-      const pkg = res.data!;
+      const pkg = res.data;
       const depEntries = Object.entries(pkg.dependencies ?? {});
 
       // Fetch license info for direct deps with concurrency limit.
@@ -248,15 +309,26 @@ export const dependencyTools = [
       // should be aware that a package with many direct deps will issue 2*N
       // registry requests (bounded to 10 in-flight at a time by createLimiter).
       const runLimited = createLimiter(10);
+      const deadline = Date.now() + FANOUT_BUDGET_MS;
+      let timedOut = false;
 
       const depLicenses = await Promise.all(
         depEntries.map(async ([depName, depRange]) => {
+          // Queued work that never got a slot before the budget expired is
+          // reported as NOT_CHECKED rather than silently omitted or, worse,
+          // counted as an allowed license.
+          if (Date.now() > deadline) {
+            timedOut = true;
+            return { name: depName, version: depRange, license: "NOT_CHECKED" };
+          }
           // Resolve the version range to find the correct version
           const abbrevRes = await runLimited(() => registryGetAbbreviated<AbbreviatedPackument>(`/${encPkg(depName)}`));
           if (!abbrevRes.ok) return { name: depName, version: depRange, license: "FETCH_ERROR" };
 
-          const abbrev = abbrevRes.data!;
-          const available = Object.keys(abbrev.versions);
+          if (!abbrevRes.data) return { name: depName, version: depRange, license: "FETCH_ERROR" };
+
+          const abbrev = abbrevRes.data;
+          const available = Object.keys(abbrev.versions ?? {});
           const resolved = maxSatisfying(available, depRange) ?? abbrev["dist-tags"]?.latest;
           if (!resolved) return { name: depName, version: depRange, license: "UNKNOWN" };
 
@@ -288,6 +360,14 @@ export const dependencyTools = [
           total: results.length,
           allowed: allowedInput,
           flagged: flagged.length,
+          // NOT_CHECKED rows are flagged (they are not in the allow-list), so a
+          // truncated run reads as "needs attention" rather than "clean".
+          ...(timedOut
+            ? {
+                truncated: true,
+                warning: `License resolution stopped after ${FANOUT_BUDGET_MS / 1000}s; rows marked NOT_CHECKED were never fetched.`,
+              }
+            : {}),
           packages: results,
           issues: flagged.length > 0 ? flagged : undefined,
         },

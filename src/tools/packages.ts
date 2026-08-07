@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { encPkg, registryGet, validatePackageName } from "../api.js";
-import { translateError } from "../errors.js";
+import { emptyBodyError, translateError } from "../errors.js";
 import type { Packument, VersionDoc } from "../types.js";
 
 export const packageTools = [
@@ -21,10 +21,14 @@ export const packageTools = [
     handler: async (input: { name: string }) => {
       const res = await registryGet<Packument>(`/${encPkg(input.name)}`);
       if (!res.ok) return translateError(res, { pkg: input.name, op: "package" });
+      if (!res.data) return emptyBodyError({ pkg: input.name, op: "package" });
 
-      const pkg = res.data!;
+      const pkg = res.data;
       const latest = pkg["dist-tags"]?.latest;
       const latestVersion = latest ? pkg.versions[latest] : undefined;
+      // `time` is absent on some proxy registries' packuments; the created/modified
+      // fields degrade to undefined rather than throwing on property access.
+      const time = pkg.time ?? {};
 
       return {
         ok: true,
@@ -42,9 +46,9 @@ export const packageTools = [
           bugs: pkg.bugs ?? latestVersion?.bugs,
           keywords: pkg.keywords ?? latestVersion?.keywords,
           engines: latestVersion?.engines,
-          created: pkg.time.created,
-          modified: pkg.time.modified,
-          versionCount: Object.keys(pkg.versions).length,
+          created: time.created,
+          modified: time.modified,
+          versionCount: Object.keys(pkg.versions ?? {}).length,
         },
       };
     },
@@ -68,8 +72,9 @@ export const packageTools = [
       const ver = input.version ?? "latest";
       const res = await registryGet<VersionDoc>(`/${encPkg(input.name)}/${ver}`);
       if (!res.ok) return translateError(res, { pkg: input.name, op: `version ${ver}` });
+      if (!res.data) return emptyBodyError({ pkg: input.name, op: `version ${ver}` });
 
-      const v = res.data!;
+      const v = res.data;
       return {
         ok: true,
         status: 200,
@@ -90,12 +95,14 @@ export const packageTools = [
           peerDependencies: v.peerDependencies ?? {},
           optionalDependencies: v.optionalDependencies ?? {},
           deprecated: v.deprecated ?? false,
+          // `dist` is required by the type but optional in practice on some
+          // proxy registries -- read it defensively rather than throwing.
           dist: {
-            shasum: v.dist.shasum,
-            integrity: v.dist.integrity,
-            tarball: v.dist.tarball,
-            fileCount: v.dist.fileCount,
-            unpackedSize: v.dist.unpackedSize,
+            shasum: v.dist?.shasum,
+            integrity: v.dist?.integrity,
+            tarball: v.dist?.tarball,
+            fileCount: v.dist?.fileCount,
+            unpackedSize: v.dist?.unpackedSize,
           },
           publisher: v._npmUser?.name,
         },
@@ -120,18 +127,19 @@ export const packageTools = [
     handler: async (input: { name: string; limit?: number }) => {
       const res = await registryGet<Packument>(`/${encPkg(input.name)}`);
       if (!res.ok) return translateError(res, { pkg: input.name, op: "versions" });
+      if (!res.data) return emptyBodyError({ pkg: input.name, op: "versions" });
 
-      const pkg = res.data!;
+      const pkg = res.data;
       const limit = input.limit ?? 50;
-      const totalPublished = Object.keys(pkg.versions).length;
+      const totalPublished = Object.keys(pkg.versions ?? {}).length;
       // Filter out versions missing a publish time before sorting -- a NaN date
       // produces undefined ordering in `.sort`. Mirrors the defensive pattern
       // already used in analysis.ts npm_release_frequency. `total` still reports
       // the raw published-version count so the field meaning doesn't shift.
-      const dated = Object.keys(pkg.versions)
+      const dated = Object.keys(pkg.versions ?? {})
         .map((v) => ({
           version: v,
-          date: pkg.time[v],
+          date: pkg.time?.[v],
           deprecated: pkg.versions[v].deprecated,
           npmUser: pkg.versions[v]._npmUser?.name,
         }))
@@ -169,8 +177,9 @@ export const packageTools = [
     handler: async (input: { name: string }) => {
       const res = await registryGet<Packument>(`/${encPkg(input.name)}`);
       if (!res.ok) return translateError(res, { pkg: input.name, op: "readme" });
+      if (!res.data) return emptyBodyError({ pkg: input.name, op: "readme" });
 
-      const readme = res.data!.readme;
+      const readme = res.data.readme;
       if (!readme) {
         return { ok: true, status: 200, data: { name: input.name, readme: "(no readme available)" } };
       }
@@ -238,21 +247,30 @@ export const packageTools = [
       ]);
 
       if (!versionRes.ok) return translateError(versionRes, { pkg: input.name, op: `types ${ver}` });
+      if (!versionRes.data) return emptyBodyError({ pkg: input.name, op: `types ${ver}` });
 
-      const v = versionRes.data!;
+      const v = versionRes.data;
       const hasBuiltinTypes = !!(v.types || v.typings);
       const typesEntry = hasBuiltinTypes ? (v.types ?? v.typings) : undefined;
 
       const hasTypesPackage = typesRes.ok;
       const typesPackageLatest = hasTypesPackage ? typesRes.data?.["dist-tags"]?.latest : undefined;
+      // Only a 404 proves the @types package does not exist. Any other failure
+      // (5xx, network, rate limit) means we could not look -- saying "no types
+      // available" there states an absence we never established.
+      const typesLookupReliable = typesRes.ok || typesRes.status === 404;
 
       let recommendation: string;
       if (hasBuiltinTypes) {
         recommendation = "Built-in types included — no additional install needed.";
       } else if (hasTypesPackage) {
         recommendation = `Install types separately: npm install -D ${typesPackage}`;
-      } else {
+      } else if (typesLookupReliable) {
         recommendation = "No TypeScript types available (built-in or @types).";
+      } else {
+        recommendation =
+          `No built-in types. Could not determine whether ${typesPackage} exists ` +
+          `(lookup returned HTTP ${typesRes.status}) — re-run to check.`;
       }
 
       return {
@@ -264,6 +282,9 @@ export const packageTools = [
           builtinTypes: hasBuiltinTypes,
           typesEntry,
           typesPackage: hasTypesPackage ? { name: typesPackage, latest: typesPackageLatest } : null,
+          // False means the @types lookup itself failed, so `typesPackage: null`
+          // is "unknown", not "does not exist".
+          typesLookupReliable,
           recommendation,
         },
       };

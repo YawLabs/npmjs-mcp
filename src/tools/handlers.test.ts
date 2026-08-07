@@ -158,6 +158,22 @@ describe("Search handlers", () => {
     assert.ok(lastRequest!.url.includes("maintenance=0.3"));
   });
 
+  it("npm_search rejects an empty or whitespace-only query without a round-trip", async () => {
+    // `z.string()` carries no .min(1), so an empty query reaches the handler
+    // from a real client. The registry answers it with total: 0, which masks a
+    // caller bug behind a successful-looking response.
+    const tool = findTool(searchTools, "npm_search");
+    for (const query of ["", "   ", "\t\n"]) {
+      requests = [];
+      lastRequest = undefined;
+      const result = (await tool.handler({ query })) as { ok: boolean; status: number; error: string };
+      assert.equal(result.ok, false, `should reject ${JSON.stringify(query)}`);
+      assert.equal(result.status, 400);
+      assert.match(result.error, /Query cannot be empty/);
+      assert.equal(lastRequest, undefined, "must not hit the registry");
+    }
+  });
+
   it("npm_search preserves full publisher object", async () => {
     mockFetch(200, {
       objects: [
@@ -287,6 +303,33 @@ describe("Package handlers", () => {
     assert.equal(result.data.showing, 1);
     assert.equal(result.data.versions.length, 1);
     assert.equal(result.data.versions[0].version, "1.0.0");
+  });
+
+  it("npm_versions with limit: 0 returns every version, not zero", async () => {
+    // The description advertises "Set limit=0 to return all" and the schema
+    // permits it (.min(0)); every other test uses the default. An inverted
+    // `limit > 0` guard would silently return an empty list on a documented input.
+    mockFetch(200, {
+      name: "many",
+      "dist-tags": { latest: "1.2.0" },
+      versions: {
+        "1.0.0": { name: "many", version: "1.0.0" },
+        "1.1.0": { name: "many", version: "1.1.0" },
+        "1.2.0": { name: "many", version: "1.2.0" },
+      },
+      time: { created: "2020-01-01", "1.0.0": "2021-01-01", "1.1.0": "2022-01-01", "1.2.0": "2023-01-01" },
+    });
+    const tool = findTool(packageTools, "npm_versions");
+    const result = (await tool.handler({ name: "many", limit: 0 })) as {
+      data: { total: number; showing: number; versions: Array<{ version: string }> };
+    };
+    assert.equal(result.data.total, 3);
+    assert.equal(result.data.showing, 3);
+    assert.deepEqual(
+      result.data.versions.map((v) => v.version),
+      ["1.2.0", "1.1.0", "1.0.0"],
+      "newest first, nothing truncated",
+    );
   });
 
   it("npm_readme returns readme content", async () => {
@@ -518,6 +561,89 @@ describe("Dependency handlers", () => {
     assert.ok(result.data.tree["b@1.0.0"]);
     assert.ok(result.data.tree["c@1.0.0"]);
     assert.deepEqual(result.data.tree["a@1.0.0"].dependencies, { c: "^1.0.0" });
+  });
+
+  it("npm_dep_tree at depth 1 returns the root alone and expands nothing", async () => {
+    // The documented lower bound (root counts as level 1). Every other test uses
+    // depth 2 or 3, so an off-by-one in `currentDepth < maxDepth` would only
+    // show up here -- as either an empty tree or an unrequested extra level.
+    mockFetchMulti({
+      "/root": {
+        name: "root",
+        "dist-tags": { latest: "1.0.0" },
+        versions: { "1.0.0": { name: "root", version: "1.0.0", dependencies: { a: "^1.0.0" } } },
+      },
+      "/a": {
+        name: "a",
+        "dist-tags": { latest: "1.0.0" },
+        versions: { "1.0.0": { name: "a", version: "1.0.0", dependencies: {} } },
+      },
+    });
+    const tool = findTool(dependencyTools, "npm_dep_tree");
+    const result = (await tool.handler({ name: "root", depth: 1 })) as {
+      data: { totalPackages: number; tree: Record<string, { dependencies: Record<string, string> }> };
+    };
+    assert.equal(result.data.totalPackages, 1);
+    assert.deepEqual(Object.keys(result.data.tree), ["root@1.0.0"]);
+    // The root still reports its declared deps; they are simply not walked.
+    assert.deepEqual(result.data.tree["root@1.0.0"].dependencies, { a: "^1.0.0" });
+  });
+
+  it("npm_dep_tree re-expands a node first reached at the depth limit when a shallower path arrives later", async () => {
+    // Graph (depth 4):
+    //   root -> slow, fast
+    //   slow(2) -> shared(3)      <- SLOW packument, so this path arrives second
+    //   fast(2) -> mid(3)
+    //   mid(3)  -> shared(4)      <- reached FIRST, at the depth limit, so its
+    //                                children are recorded but never walked
+    //   shared  -> leaf
+    //
+    // Dispatch order normally follows depth, so a deeper-first arrival requires
+    // the shallower chain to run through a slower package -- which is why this
+    // only bites at depth >= 4. With a plain "already seen" check the later
+    // depth-3 visit short-circuits and `leaf` never appears; the depth-aware
+    // memoization lets it re-expand.
+    let releaseSlow!: () => void;
+    const slowGate = new Promise<void>((r) => {
+      releaseSlow = r;
+    });
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    const pkg = (name: string, deps: Record<string, string>) => ({
+      name,
+      "dist-tags": { latest: "1.0.0" },
+      versions: { "1.0.0": { name, version: "1.0.0", dependencies: deps } },
+    });
+
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith("/root")) return json(pkg("root", { slow: "^1.0.0", fast: "^1.0.0" }));
+      if (url.endsWith("/fast")) return json(pkg("fast", { mid: "^1.0.0" }));
+      if (url.endsWith("/mid")) return json(pkg("mid", { shared: "^1.0.0" }));
+      if (url.endsWith("/shared")) {
+        // `shared` has now been fetched via the deep path; let the shallow one run.
+        releaseSlow();
+        return json(pkg("shared", { leaf: "^1.0.0" }));
+      }
+      if (url.endsWith("/slow")) {
+        await slowGate;
+        return json(pkg("slow", { shared: "^1.0.0" }));
+      }
+      if (url.endsWith("/leaf")) return json(pkg("leaf", {}));
+      return json({});
+    }) as typeof fetch;
+
+    const tool = findTool(dependencyTools, "npm_dep_tree");
+    const result = (await tool.handler({ name: "root", depth: 4 })) as {
+      data: { totalPackages: number; tree: Record<string, unknown> };
+    };
+    assert.ok(result.data.tree["shared@1.0.0"], "shared should be in the tree");
+    assert.ok(
+      result.data.tree["leaf@1.0.0"],
+      `leaf is only reachable by re-expanding shared at the shallower depth; tree was ${Object.keys(result.data.tree).join(", ")}`,
+    );
+    // root, slow, fast, mid, shared, leaf
+    assert.equal(result.data.totalPackages, 6);
   });
 
   it("npm_dep_tree deduplicates when two parents resolve to the same child version", async () => {
@@ -1550,6 +1676,37 @@ describe("Analysis handlers", () => {
     assert.equal(result.data.signals.vulnerabilityCount, null);
   });
 
+  it("npm_health stays well-defined when dist-tags.latest names a version absent from versions", async () => {
+    // A partially-written packument: `latest` points at 1.0.0 but the version
+    // doc has not landed yet. A code comment asserts every downstream read uses
+    // optional chaining and is therefore safe -- that claim is load-bearing and
+    // breaks the moment someone adds a non-optional read.
+    mockFetchMulti({
+      "/-/npm/v1/security/advisories/bulk": { halfwritten: [] },
+      "/downloads/point/last-week": { downloads: 5 },
+      "/downloads/point/last-month": { downloads: 20 },
+      "/halfwritten": {
+        name: "halfwritten",
+        "dist-tags": { latest: "1.0.0" },
+        versions: { "0.9.0": { version: "0.9.0", license: "MIT" } },
+        time: { created: "2020-01-01", "0.9.0": "2024-01-01" },
+        maintainers: [{ name: "alice" }],
+      },
+    });
+    const tool = findTool(analysisTools, "npm_health");
+    const result = (await tool.handler({ name: "halfwritten" })) as {
+      ok: boolean;
+      data: { latest: string; assessment: string; signals: { isDeprecated: unknown; versionCount: number } };
+    };
+    assert.equal(result.ok, true, "a missing version doc must not throw");
+    assert.equal(result.data.latest, "1.0.0");
+    // isDeprecated derives from latestVersion?.deprecated -- undefined, so false.
+    assert.equal(result.data.signals.isDeprecated, false);
+    // versionCount counts what actually exists, not what dist-tags claims.
+    assert.equal(result.data.signals.versionCount, 1);
+    assert.ok(result.data.assessment.length > 0);
+  });
+
   it("npm_maintainers returns maintainer list", async () => {
     mockFetch(200, {
       ...packument,
@@ -2160,11 +2317,48 @@ describe("Types handler", () => {
       }) as typeof fetch;
       const tool = findTool(packageTools, "npm_types");
       const result = (await tool.handler({ name: "no-types-pkg" })) as {
-        data: { builtinTypes: boolean; typesPackage: unknown; recommendation: string };
+        data: { builtinTypes: boolean; typesPackage: unknown; recommendation: string; typesLookupReliable: boolean };
       };
       assert.equal(result.data.builtinTypes, false);
       assert.equal(result.data.typesPackage, null);
       assert.match(result.data.recommendation, /No TypeScript types available/);
+      // A 404 is proof the @types package does not exist, so the absence is
+      // trustworthy and the flat "no types available" wording is earned.
+      assert.equal(result.data.typesLookupReliable, true);
+    } finally {
+      delete process.env.NPM_RETRY_BACKOFF_MS;
+    }
+  });
+
+  it("npm_types does not claim 'no types available' when the @types lookup failed for a non-404 reason", async () => {
+    // A 5xx means we could not look. Reporting a definitive absence there
+    // states something the run never established.
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    try {
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.endsWith("/flaky-pkg/latest")) {
+          return new Response(
+            JSON.stringify({ name: "flaky-pkg", version: "1.0.0", dist: { shasum: "abc", tarball: "t" } }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        // @types/flaky-pkg -> 503, not 404.
+        return new Response("unavailable", { status: 503 });
+      }) as typeof fetch;
+
+      const tool = findTool(packageTools, "npm_types");
+      const result = (await tool.handler({ name: "flaky-pkg" })) as {
+        data: { typesPackage: unknown; recommendation: string; typesLookupReliable: boolean };
+      };
+      assert.equal(result.data.typesLookupReliable, false);
+      assert.equal(result.data.typesPackage, null, "null here means 'unknown', which typesLookupReliable disambiguates");
+      assert.match(result.data.recommendation, /Could not determine/);
+      assert.equal(
+        /No TypeScript types available/.test(result.data.recommendation),
+        false,
+        "must not assert an absence it could not verify",
+      );
     } finally {
       delete process.env.NPM_RETRY_BACKOFF_MS;
     }
@@ -2378,6 +2572,107 @@ describe("Workflow handlers", () => {
     assert.match(result.data.ifPublishFails!.permanentFix.instructions, /Granular Access Token/);
   });
 
+  it("npm_check_auth treats 2FA mode auth-only as non-blocking for headless publish", async () => {
+    // "auth-only" challenges LOGIN, not writes. Every existing auth-only fixture
+    // in this suite pairs it with pending: true, which routes to the disabled
+    // path -- so the mode itself was never exercised.
+    mockFetchMulti({
+      "/-/whoami": { username: "alice" },
+      "/-/npm/v1/user": { name: "alice", tfa: { mode: "auth-only", pending: false } },
+      "/-/npm/v1/tokens": {
+        total: 1,
+        objects: [{ token: "npm_***", key: "k1", readonly: false, cidr_whitelist: [], created: "", updated: "" }],
+      },
+    });
+    const tool = findTool(workflowTools, "npm_check_auth");
+    const result = (await tool.handler({})) as {
+      data: { twoFactorAuth: string; canPublishHeadless: boolean | null; ifPublishFails?: unknown };
+    };
+    assert.equal(result.data.twoFactorAuth, "auth-only");
+    assert.equal(result.data.canPublishHeadless, true, "auth-only does not gate writes");
+    assert.ok(!result.data.ifPublishFails, "no EOTP hand-off for a mode that never challenges a publish");
+  });
+
+  it("npm_check_auth still reports auth-and-writes as uncertain for headless publish", async () => {
+    // The conservative half of the same branch -- guards against the auth-only
+    // carve-out widening to every mode.
+    mockFetchMulti({
+      "/-/whoami": { username: "alice" },
+      "/-/npm/v1/user": { name: "alice", tfa: { mode: "auth-and-writes", pending: false } },
+      "/-/npm/v1/tokens": { total: 0, objects: [] },
+    });
+    const tool = findTool(workflowTools, "npm_check_auth");
+    const result = (await tool.handler({})) as { data: { canPublishHeadless: boolean | null } };
+    assert.equal(result.data.canPublishHeadless, null);
+  });
+
+  it("npm_publish_preflight does not flag auth-only 2FA as an EOTP risk", async () => {
+    mockFetchMulti({
+      "/-/whoami": { username: "alice" },
+      "/-/npm/v1/user": { name: "alice", tfa: { mode: "auth-only", pending: false } },
+      "/-/npm/v1/tokens": {
+        total: 1,
+        objects: [{ token: "npm_***", key: "k1", readonly: false, cidr_whitelist: [], created: "", updated: "" }],
+      },
+      "/@yawlabs%2Ftest": {
+        name: "@yawlabs/test",
+        "dist-tags": { latest: "1.0.0" },
+        versions: { "1.0.0": { version: "1.0.0" } },
+        maintainers: [{ name: "alice" }],
+        time: { created: "2024-01-01" },
+      },
+    });
+    const tool = findTool(workflowTools, "npm_publish_preflight");
+    const result = (await tool.handler({ name: "@yawlabs/test" })) as {
+      data: { summary: string; canPublishHeadless: boolean | null; humanActions?: unknown[] };
+    };
+    assert.equal(result.data.canPublishHeadless, true);
+    assert.ok(
+      !result.data.summary.startsWith("UNCERTAIN"),
+      `auth-only should not produce an UNCERTAIN verdict, got: ${result.data.summary}`,
+    );
+    assert.ok(!result.data.humanActions, "no terminal-publish hand-off when 2FA does not gate writes");
+  });
+
+  it("npm_publish_preflight never reports 'All checks passed' when the token inventory could not be read", async () => {
+    // Regression guard. The auth-only path sets canPublishHeadless = true and
+    // emits an `info` (not `warn`) 2FA check, so without an explicit warn on the
+    // failed token lookup the summary reached the bare all-clear having never
+    // confirmed a publish-capable token exists.
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    try {
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        const json = (body: unknown) =>
+          new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+        if (url.includes("/-/whoami")) return json({ username: "alice" });
+        if (url.includes("/-/npm/v1/tokens")) return new Response("unavailable", { status: 503 });
+        if (url.includes("/-/npm/v1/user")) return json({ name: "alice", tfa: { mode: "auth-only", pending: false } });
+        return json({
+          name: "@yawlabs/test",
+          "dist-tags": { latest: "1.0.0" },
+          versions: { "1.0.0": { version: "1.0.0" } },
+          maintainers: [{ name: "alice" }],
+          time: { created: "2024-01-01" },
+        });
+      }) as typeof fetch;
+
+      const tool = findTool(workflowTools, "npm_publish_preflight");
+      const result = (await tool.handler({ name: "@yawlabs/test" })) as {
+        data: { summary: string; checks: Array<{ check: string; status: string }> };
+      };
+      const tokenCheck = result.data.checks.find((c) => c.check === "Token capability");
+      assert.ok(tokenCheck, "an unread token inventory must still produce a Token capability entry");
+      assert.equal(tokenCheck!.status, "warn");
+      assert.ok(
+        !result.data.summary.includes("All checks passed"),
+        `summary must not claim a clean sweep, got: ${result.data.summary}`,
+      );
+    } finally {
+      delete process.env.NPM_RETRY_BACKOFF_MS;
+    }
+  });
+
   it("npm_publish_preflight reports maintainer access PASS when the authenticated user is a maintainer", async () => {
     // Most common real-world success case for an existing package.
     mockFetchMulti({
@@ -2428,6 +2723,95 @@ describe("Workflow handlers", () => {
     assert.match(maintainerCheck!.detail, /alice/);
     assert.match(maintainerCheck!.detail, /bob/);
     assert.ok(result.data.failCount >= 1);
+  });
+});
+
+// ─── Empty-body (2xx with no payload) handling ───
+
+describe("Empty 2xx body degrades to an actionable 502, not a TypeError", () => {
+  // api.ts returns `{ ok: true }` with no `data` for a 204, a content-length: 0
+  // response, or a 2xx whose body is empty. Handlers that need the payload used
+  // to read it through `res.data!`, which surfaced as a bare
+  // "Cannot read properties of undefined" at the MCP boundary. Every guarded
+  // call site is exercised here so the guard can't silently regress.
+  function mockEmptyBody() {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      lastRequest = { url, method: init?.method ?? "GET", headers: {}, body: undefined };
+      requests.push(lastRequest);
+      return new Response("", { status: 200, headers: { "content-length": "0" } });
+    }) as typeof fetch;
+  }
+
+  const CASES: Array<{ tools: readonly { name: string; handler: Function }[]; name: string; args: unknown }> = [
+    { tools: packageTools, name: "npm_package", args: { name: "express" } },
+    { tools: packageTools, name: "npm_version", args: { name: "express" } },
+    { tools: packageTools, name: "npm_versions", args: { name: "express" } },
+    { tools: packageTools, name: "npm_readme", args: { name: "express" } },
+    { tools: packageTools, name: "npm_types", args: { name: "express" } },
+    { tools: analysisTools, name: "npm_health", args: { name: "express" } },
+    { tools: analysisTools, name: "npm_maintainers", args: { name: "express" } },
+    { tools: analysisTools, name: "npm_release_frequency", args: { name: "express" } },
+    { tools: dependencyTools, name: "npm_dependencies", args: { name: "express" } },
+    { tools: dependencyTools, name: "npm_license_check", args: { name: "express" } },
+    { tools: authTools, name: "npm_profile", args: {} },
+    { tools: authTools, name: "npm_tokens", args: {} },
+  ];
+
+  for (const { tools, name, args } of CASES) {
+    it(`${name} returns 502 rather than throwing on an empty 2xx body`, async () => {
+      mockEmptyBody();
+      const tool = findTool(tools, name);
+      const result = (await tool.handler(args)) as { ok: boolean; status: number; error: string };
+      assert.equal(result.ok, false, `${name} should not report success with no payload`);
+      assert.equal(result.status, 502);
+      assert.match(result.error, /empty body/);
+    });
+  }
+
+  it("npm_compare degrades the affected row instead of failing the whole comparison", async () => {
+    // The 13th call site is row-scoped: one package returning an empty body must
+    // not take down the sibling rows.
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      lastRequest = { url, method: init?.method ?? "GET", headers: {}, body: undefined };
+      requests.push(lastRequest);
+      if (url.endsWith("/express")) {
+        return new Response("", { status: 200, headers: { "content-length": "0" } });
+      }
+      if (url.includes("/downloads/")) {
+        return new Response(JSON.stringify({ downloads: 10 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.includes("/-/npm/v1/security/advisories/bulk")) {
+        return new Response(JSON.stringify({ koa: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          name: "koa",
+          "dist-tags": { latest: "2.0.0" },
+          versions: { "2.0.0": { version: "2.0.0", license: "MIT" } },
+          time: { created: "2018-01-01", "2.0.0": "2024-01-01" },
+          maintainers: [],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    const tool = findTool(analysisTools, "npm_compare");
+    const result = (await tool.handler({ packages: ["express", "koa"] })) as {
+      ok: boolean;
+      data: { comparison: Array<{ name: string; error?: string; latest?: string }> };
+    };
+    assert.equal(result.ok, true);
+    const byName = Object.fromEntries(result.data.comparison.map((r) => [r.name, r]));
+    assert.match(byName.express.error ?? "", /empty body/);
+    assert.equal(byName.koa.latest, "2.0.0", "the sibling row must still resolve");
   });
 });
 

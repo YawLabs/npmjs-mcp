@@ -13,8 +13,13 @@
  *   - api.npmjs.org        — download statistics (npm-specific, not overrideable)
  *   - replicate.npmjs.com  — CouchDB changes feed (npm-specific, not overrideable)
  *
- * Transient failures (429, 502, 503, 504) retry up to 2 times with exponential backoff,
- * honoring the Retry-After header when present. Network errors retry on the same schedule.
+ * Retry policy, by request shape:
+ *   - Idempotent reads (GET, and the read-only audit POSTs) retry on 429/502/503/504
+ *     and on network errors, up to 2 times with exponential backoff, honoring
+ *     Retry-After (clamped to 30s).
+ *   - Writes (PUT/POST/DELETE that mutate) retry ONLY on 429/503 -- the statuses that
+ *     mean "I did not process this". They are never retried after a network error or
+ *     timeout, because the registry may have applied the change and lost the response.
  */
 
 const DEFAULT_REGISTRY_URL = "https://registry.npmjs.org";
@@ -24,6 +29,21 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_BACKOFF_MS = 500;
 const MAX_RETRIES = 2;
 const RETRYABLE_STATUSES = new Set([429, 502, 503, 504]);
+/**
+ * Statuses safe to retry when the request is NOT idempotent (a real write).
+ * 429 and 503 are explicit "I did not process this" refusals. 502 and 504 come
+ * from a gateway and can mean the origin DID apply the write before the
+ * response was lost -- retrying those re-sends a mutation the registry already
+ * performed, which then surfaces as a spurious 409 (stale _rev) on the retry.
+ */
+const WRITE_RETRYABLE_STATUSES = new Set([429, 503]);
+/**
+ * Ceiling on a server-supplied Retry-After wait. Without it a `Retry-After: 300`
+ * parks a tool call for 5 minutes per attempt -- an order of magnitude past the
+ * 30s request timeout, with no way for the caller to interrupt.
+ */
+const MAX_RETRY_AFTER_MS = 30_000;
+const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 export interface ApiResponse<T = unknown> {
   ok: boolean;
@@ -119,6 +139,27 @@ export function validateTag(tag: string): string | null {
   return validateIdent(tag, "Tag name");
 }
 
+const DOWNLOAD_PERIOD_KEYWORDS = new Set(["last-day", "last-week", "last-month", "last-year"]);
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Validate a downloads-API period. The period is interpolated into the request
+ * PATH, so an unvalidated value re-points the call at a different endpoint
+ * (`last-week/../../-/v1/search` and friends). Accepts the documented keywords,
+ * a single ISO date, or an ISO date range.
+ */
+export function validatePeriod(period: string): string | null {
+  if (typeof period !== "string" || period.length === 0) return "Period is empty";
+  if (DOWNLOAD_PERIOD_KEYWORDS.has(period)) return null;
+  const [start, end, ...rest] = period.split(":");
+  if (rest.length > 0) return `Invalid period '${period}'. A date range takes exactly two dates ('YYYY-MM-DD:YYYY-MM-DD').`;
+  if (ISO_DATE.test(start) && (end === undefined || ISO_DATE.test(end))) return null;
+  return (
+    `Invalid period '${period}'. Use one of ${[...DOWNLOAD_PERIOD_KEYWORDS].join(", ")}, ` +
+    `a single date ('YYYY-MM-DD'), or a range ('YYYY-MM-DD:YYYY-MM-DD').`
+  );
+}
+
 /**
  * URL-encode a package name for use in registry paths. Throws on invalid input.
  * Scoped packages are preserved with an unencoded `@` prefix as the registry requires.
@@ -182,12 +223,25 @@ function authHeaders(): Record<string, string> {
 
 // ─── HTTP request with retry/backoff on transient failures ────
 
-function parseRetryAfter(header: string | null): number | null {
+/** Ceiling on a server-supplied Retry-After wait, in ms. Exported for tests. */
+export const RETRY_AFTER_CEILING_MS = MAX_RETRY_AFTER_MS;
+
+/**
+ * Parse a Retry-After header (delta-seconds or HTTP-date) into a wait in ms,
+ * clamped to MAX_RETRY_AFTER_MS. A registry under load can advertise a wait far
+ * longer than any caller wants to block for; clamping keeps the total call
+ * bounded while still respecting the server's backpressure signal.
+ *
+ * Exported purely so the clamp is assertable: driving it through `request()`
+ * would mean a test that actually sleeps the clamped duration, since a parsed
+ * Retry-After deliberately takes precedence over the zeroed test backoff.
+ */
+export function parseRetryAfter(header: string | null): number | null {
   if (!header) return null;
   const seconds = Number(header);
-  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, MAX_RETRY_AFTER_MS);
   const date = Date.parse(header);
-  if (!Number.isNaN(date)) return Math.max(0, date - Date.now());
+  if (!Number.isNaN(date)) return Math.min(Math.max(0, date - Date.now()), MAX_RETRY_AFTER_MS);
   return null;
 }
 
@@ -198,7 +252,7 @@ function sleep(ms: number): Promise<void> {
 async function request<T = unknown>(
   baseUrl: string,
   path: string,
-  options?: { method?: string; headers?: Record<string, string>; body?: unknown },
+  options?: { method?: string; headers?: Record<string, string>; body?: unknown; idempotent?: boolean },
 ): Promise<ApiResponse<T>> {
   const method = options?.method ?? "GET";
   const headers: Record<string, string> = {
@@ -213,6 +267,10 @@ async function request<T = unknown>(
   }
 
   const url = `${baseUrl}${path}`;
+  // Read-shaped POSTs (the advisory/audit lookup endpoints) opt in explicitly:
+  // they mutate nothing, so the full GET retry policy is safe for them.
+  const idempotent = options?.idempotent ?? IDEMPOTENT_METHODS.has(method);
+  const retryableStatuses = idempotent ? RETRYABLE_STATUSES : WRITE_RETRYABLE_STATUSES;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     const started = Date.now();
@@ -224,7 +282,7 @@ async function request<T = unknown>(
         signal: AbortSignal.timeout(getTimeoutMs()),
       });
 
-      if (RETRYABLE_STATUSES.has(res.status) && attempt < MAX_RETRIES) {
+      if (retryableStatuses.has(res.status) && attempt < MAX_RETRIES) {
         const retryAfter = parseRetryAfter(res.headers.get("Retry-After"));
         const waitMs = retryAfter ?? getBackoffMs(attempt);
         debug(`${method} ${url} -> ${res.status} retry in ${waitMs}ms (attempt ${attempt + 1}/${MAX_RETRIES + 1})`);
@@ -260,10 +318,41 @@ async function request<T = unknown>(
       if (text.length === 0) {
         return { ok: true, status: res.status };
       }
-      const data = JSON.parse(text) as T;
+      // Parse inside its own try. A malformed body on a 2xx is a RESPONSE
+      // defect, not a transport failure -- letting it fall into the catch below
+      // would retry a request the registry already answered (and, on a write,
+      // already applied). Report it against the real status instead.
+      let data: T;
+      try {
+        data = JSON.parse(text) as T;
+      } catch (parseErr) {
+        const detail = parseErr instanceof Error ? parseErr.message : String(parseErr);
+        debug(`${method} ${url} -> ${res.status} unparseable JSON body`);
+        return {
+          ok: false,
+          status: res.status,
+          error: `Registry returned HTTP ${res.status} with an unparseable JSON body: ${detail}`,
+        };
+      }
       return { ok: true, status: res.status, data };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // A network error or timeout on a write is ambiguous: the registry may
+      // have applied the mutation and lost the response. Retrying re-sends it
+      // with the same _rev, which comes back 409 and reads like a failure on an
+      // operation that actually succeeded. Surface the ambiguity instead.
+      if (!idempotent) {
+        debug(`${method} ${url} -> network error on non-idempotent request, not retried: ${message}`);
+        return {
+          ok: false,
+          status: 0,
+          // State the POLICY, not the history: this request may already have
+          // been retried on an earlier 429/503, so "was not retried" would be
+          // false in that case. What is always true is that a transport failure
+          // does not trigger a re-send for a mutating method.
+          error: `${message} (${method} is not re-sent after a transport failure -- the registry may have already applied this change. Re-read the current state before retrying.)`,
+        };
+      }
       if (attempt < MAX_RETRIES) {
         const waitMs = getBackoffMs(attempt);
         debug(`${method} ${url} -> network error retry in ${waitMs}ms (${message})`);
@@ -292,9 +381,12 @@ export function registryGetAbbreviated<T = unknown>(path: string): Promise<ApiRe
   });
 }
 
-/** POST to registry (security audit endpoints). */
+/**
+ * POST to registry (security audit endpoints). These are read-only lookups that
+ * happen to take a POST body, so they opt into the full idempotent retry policy.
+ */
 export function registryPost<T = unknown>(path: string, body: unknown): Promise<ApiResponse<T>> {
-  return request<T>(getRegistryUrl(), path, { method: "POST", body });
+  return request<T>(getRegistryUrl(), path, { method: "POST", body, idempotent: true });
 }
 
 // ─── Registry API (authenticated) ───────────────────────

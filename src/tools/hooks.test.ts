@@ -155,6 +155,36 @@ describe("npm_hook_add", () => {
     assert.equal(lastRequest, undefined);
   });
 
+  it("names the missing username for a bare '~' target", async () => {
+    // This branch exists only to beat the composite message the
+    // post-classification validator would emit ("Invalid hook target '~':
+    // Username is empty"). Untested, the better error can regress for free.
+    const tool = findTool("npm_hook_add");
+    const result = (await tool.handler({
+      target: "~",
+      endpoint: "https://example.com/h",
+      secret: "s",
+    })) as { ok: boolean; status: number; error: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.match(result.error, /missing the username/);
+    assert.match(result.error, /~your-username/);
+    assert.equal(lastRequest, undefined);
+  });
+
+  it("names the missing scope for a bare '@' target", async () => {
+    const tool = findTool("npm_hook_add");
+    const result = (await tool.handler({
+      target: "@",
+      endpoint: "https://example.com/h",
+      secret: "s",
+    })) as { ok: boolean; status: number; error: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.match(result.error, /missing the scope/);
+    assert.equal(lastRequest, undefined);
+  });
+
   it("rejects malformed scope targets (e.g. '@.bad')", async () => {
     const tool = findTool("npm_hook_add");
     const result = (await tool.handler({

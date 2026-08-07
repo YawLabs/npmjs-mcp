@@ -15,6 +15,22 @@ type AuthAction = {
   context: string;
 };
 
+/**
+ * npm exposes two 2FA modes, and only one of them affects publishing:
+ *   - "auth-only"       -> 2FA is required to LOG IN. Writes (publish, deprecate,
+ *                          dist-tag) are NOT challenged, so any valid read-write
+ *                          token publishes headlessly.
+ *   - "auth-and-writes" -> 2FA is required for writes too. A publish-type token
+ *                          then EOTPs in a non-interactive context.
+ *
+ * Treating "2FA is on" as "publishing may fail" flagged every auth-only account
+ * as UNCERTAIN even though headless publishing works fine for them. An
+ * unrecognized future mode is treated as write-gating (the conservative side).
+ */
+function tfaGatesWrites(mode: string): boolean {
+  return mode !== "auth-only";
+}
+
 export const workflowTools = [
   {
     name: "npm_check_auth",
@@ -75,10 +91,13 @@ export const workflowTools = [
       }
 
       if (tokensRes.ok && tokensRes.data) {
-        const tokens = tokensRes.data.objects;
-        const hasReadWrite = tokens.some((t) => !t.readonly);
-        result.tokenCount = tokensRes.data.total;
-        result.hasReadWriteTokens = hasReadWrite;
+        const tokens = Array.isArray(tokensRes.data.objects) ? tokensRes.data.objects : [];
+        result.tokenCount = tokensRes.data.total ?? tokens.length;
+        result.hasReadWriteTokens = tokens.some((t) => !t.readonly);
+      } else {
+        // Distinguish "no read-write tokens" from "could not look" -- the field
+        // being absent would otherwise read as the former.
+        result.tokenInventoryRead = false;
       }
 
       // Determine if headless publish is possible
@@ -87,6 +106,12 @@ export const workflowTools = [
         result.canPublishHeadless = true;
         result.tokenType = "any (2FA disabled)";
         result.recommendation = "2FA is disabled — any valid token can publish. Consider enabling 2FA for security.";
+      } else if (typeof result.twoFactorAuth === "string" && !tfaGatesWrites(result.twoFactorAuth)) {
+        // 2FA is on but only gates login (mode "auth-only") — publishes are not
+        // challenged, so headless publishing works with any valid token.
+        result.canPublishHeadless = true;
+        result.tokenType = "any (2FA does not gate writes in this mode)";
+        result.recommendation = `2FA is enabled in '${result.twoFactorAuth}' mode, which challenges login but NOT publishes. Any valid read-write token can publish headlessly.`;
       } else if (result.twoFactorAuth === "fetch-failed") {
         // Profile endpoint failed — token lacks the required permission or there was a network error
         result.canPublishHeadless = null;
@@ -151,6 +176,11 @@ export const workflowTools = [
       const scope = isScoped ? input.name.split("/")[0] : null;
       let username: string | null = null;
       let twoFactorAuth: string | null = null;
+      // True only when 2FA actually challenges writes. Stays false when 2FA is
+      // off, when the mode is auth-only, AND when the profile fetch failed --
+      // so the "2FA is enabled" wording below is only ever emitted on a mode we
+      // actually read. The unknown case gets its own summary branch.
+      let writesGatedBy2fa = false;
       let canPublishHeadless: boolean | null = null;
 
       // ─── 1. Auth token check ───
@@ -206,11 +236,22 @@ export const workflowTools = [
             const tfa = profileRes.data.tfa;
             if (tfa && !tfa.pending) {
               twoFactorAuth = tfa.mode;
-              checks.push({
-                check: "2FA status",
-                status: "info",
-                detail: `2FA is enabled (mode: ${tfa.mode}). In this non-interactive context:\n  - Automation/granular tokens: can publish (bypass 2FA)\n  - Publish tokens (from ~/.npmrc): WILL FAIL with EOTP error\n  - --auth-type=web: IMPOSSIBLE (needs browser)\n  - OTP codes: IMPOSSIBLE (agent can't enter them)`,
-              });
+              writesGatedBy2fa = tfaGatesWrites(tfa.mode);
+              if (!writesGatedBy2fa) {
+                // auth-only: 2FA challenges login, not publishes.
+                canPublishHeadless = true;
+                checks.push({
+                  check: "2FA status",
+                  status: "info",
+                  detail: `2FA is enabled in '${tfa.mode}' mode, which challenges login but NOT writes. Publishing is not gated by 2FA on this account — any valid read-write token works headlessly.`,
+                });
+              } else {
+                checks.push({
+                  check: "2FA status",
+                  status: "info",
+                  detail: `2FA is enabled (mode: ${tfa.mode}). In this non-interactive context:\n  - Automation/granular tokens: can publish (bypass 2FA)\n  - Publish tokens (from ~/.npmrc): WILL FAIL with EOTP error\n  - --auth-type=web: IMPOSSIBLE (needs browser)\n  - OTP codes: IMPOSSIBLE (agent can't enter them)`,
+                });
+              }
             } else {
               twoFactorAuth = "disabled";
               canPublishHeadless = true;
@@ -232,12 +273,12 @@ export const workflowTools = [
 
           // Token inventory — tokensRes already resolved above
           if (tokensRes.ok && tokensRes.data) {
-            const tokens = tokensRes.data.objects;
-            const totalTokens = tokensRes.data.total;
+            const tokens = Array.isArray(tokensRes.data.objects) ? tokensRes.data.objects : [];
+            const totalTokens = tokensRes.data.total ?? tokens.length;
             const readWriteTokens = tokens.filter((t) => !t.readonly);
 
-            if (twoFactorAuth && twoFactorAuth !== "disabled") {
-              // 2FA is on — headless publish depends on token type
+            if (writesGatedBy2fa) {
+              // 2FA challenges writes — headless publish depends on token type
               if (readWriteTokens.length > 0) {
                 checks.push({
                   check: "Token capability",
@@ -253,14 +294,16 @@ export const workflowTools = [
                 });
                 canPublishHeadless = false;
               }
-            } else if (twoFactorAuth === "disabled" && readWriteTokens.length === 0) {
-              // 2FA off but the account holds only readonly tokens. Without this
-              // branch the 2FA-disabled path would short-circuit to canPublishHeadless=true
-              // and the summary would read READY despite no token having publish capability.
+            } else if (twoFactorAuth !== null && readWriteTokens.length === 0) {
+              // 2FA does not gate writes (off, or auth-only) but the account holds
+              // only readonly tokens. Without this branch those paths short-circuit
+              // to canPublishHeadless=true and the summary reads READY despite no
+              // token having publish capability. Gated on a KNOWN 2FA state so a
+              // failed profile fetch doesn't produce a confident verdict.
               checks.push({
                 check: "Token capability",
                 status: "fail",
-                detail: `2FA is disabled but no read-write tokens found out of ${totalTokens} total. Need a token with publish permissions.`,
+                detail: `2FA does not gate writes here (mode: ${twoFactorAuth}), but no read-write tokens were found out of ${totalTokens} total. Need a token with publish permissions.`,
               });
               canPublishHeadless = false;
             }
@@ -273,6 +316,18 @@ export const workflowTools = [
                 detail: `${input.name} is under ${scope}. You have ${totalTokens} token(s). If any are granular tokens scoped to ${scope}, they cover ALL packages under that scope — check your tokens at https://www.npmjs.com/settings/~/tokens before creating duplicates.`,
               });
             }
+          } else {
+            // The token inventory could not be read. Without this branch the
+            // check list simply omits "Token capability", and any path that set
+            // canPublishHeadless = true (2FA off, or the auth-only mode, whose
+            // 2FA check is `info` rather than `warn`) reaches the bare "READY to
+            // publish. All checks passed." summary having never confirmed that a
+            // publish-capable token exists. A warn keeps the summary honest.
+            checks.push({
+              check: "Token capability",
+              status: "warn",
+              detail: `Could not read the token inventory (HTTP ${tokensRes.status}), so whether any read-write token exists is unverified. Check https://www.npmjs.com/settings/~/tokens, or re-run once the endpoint is reachable.`,
+            });
           }
         }
       }
@@ -330,7 +385,7 @@ export const workflowTools = [
       }
 
       // ─── 4. Publish guidance (always non-interactive) ───
-      if (twoFactorAuth && twoFactorAuth !== "disabled" && canPublishHeadless !== true) {
+      if (writesGatedBy2fa && canPublishHeadless !== true) {
         actions.push({
           label: "Publish from your terminal (one-time)",
           command: "npm publish --access public --auth-type=web",
@@ -354,10 +409,17 @@ export const workflowTools = [
         summary = `BLOCKED: ${failures.length} issue(s) must be resolved before publishing.`;
       } else if (canPublishHeadless === false) {
         summary = "BLOCKED: No suitable token for headless publishing. See actions below.";
-      } else if (canPublishHeadless === null && twoFactorAuth !== "disabled") {
+      } else if (writesGatedBy2fa && canPublishHeadless === null) {
         summary =
-          "UNCERTAIN: 2FA is enabled and token type cannot be verified. Publishing may fail with EOTP. " +
+          "UNCERTAIN: 2FA gates writes on this account and token type cannot be verified. Publishing may fail with EOTP. " +
           "If it does, this is a hand-off to the human — do NOT retry. See actions below.";
+      } else if (twoFactorAuth === null) {
+        // Authenticated and whoami passed (otherwise a fail check would have won
+        // above), but /-/npm/v1/user never answered. Say that, rather than
+        // asserting "2FA is enabled" -- a state this run never established.
+        summary =
+          "UNCERTAIN: the token is valid, but 2FA status could not be read, so publish-readiness is unverified. " +
+          "Re-run once /-/npm/v1/user is reachable.";
       } else if (warnings.length > 0) {
         summary = `READY with ${warnings.length} warning(s). Review before proceeding.`;
       } else {

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Build a self-contained single-file binary of the @yawlabs/mcp sidecar.
+// Build a self-contained single-file binary of this MCP server.
 //
 // Strategy: esbuild bundles src/index.ts + ALL its dependencies (including
 // the externals tsup leaves out -- @modelcontextprotocol/sdk and undici)
@@ -13,8 +13,9 @@
 // Deno-compatible in principle (clean ESM, no native addons), but the node:
 // builtin imports in the bundle are bare (`fs`, not `node:fs`), which Deno
 // rejects without a compat shim. Node SEA needs no such rewrite and ships with
-// the Node already on the box, so it is the zero-friction path here. See
-// BINARY_DISTRIBUTION.md for the deno/bun fallbacks.
+// the Node already on the box, so it is the zero-friction path here. (An
+// earlier version of this comment pointed at a BINARY_DISTRIBUTION.md for the
+// deno/bun fallbacks; that document does not exist in this repo.)
 //
 // This script ONLY reads node_modules (via esbuild's resolver) and writes to
 // build-tmp/ and bin/<platform>-<arch>/. It does NOT mutate package.json,
@@ -130,6 +131,7 @@ console.log('');
 console.log(`OK  ${outExe}`);
 console.log(`    ${fmtSize(outExe)}`);
 console.log('');
+// `--version` is the only subcommand src/index.ts implements; anything else
+// falls through to starting the stdio MCP server, which just blocks on stdin.
 console.log('Verify with:');
 console.log(`    "${outExe}" --version`);
-console.log(`    "${outExe}" doctor --json`);

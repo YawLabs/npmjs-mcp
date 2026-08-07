@@ -98,6 +98,34 @@ That's it. Now ask your AI assistant:
 |---|---|---|
 | `NPM_TOKEN` | (none) | npm access token. Required only for write/auth/org/access/hooks tools. A Granular Access Token is strongly preferred over a Classic Automation token. |
 | `NPM_REGISTRY` | `https://registry.npmjs.org` | Alternate registry (enterprise/private). Must support the npm HTTP API shape. |
+| `NPMJS_MCP_RUNTIME` | `auto` | `auto` prefers [oam](https://oamjs.org) and falls back to Node; `oam` requires it and fails loudly if absent; `node` never uses it. |
+| `OAM_BIN` | (none) | Explicit path to an `oam` binary, checked before PATH and the installer locations. |
+
+### Runtime
+
+The server ships a launcher that prefers the [oam](https://oamjs.org) runtime and falls back to Node. The server itself is a pre-bundled ESM file using only `node:` builtins, so **both paths behave identically** — verified against the full MCP surface (handshake, all 64 tools, live registry calls) on each.
+
+Falling back costs nothing: npm has already started Node to run the launcher, so the fallback is an in-process `import()` — no extra spawn, no extra startup.
+
+**oam is faster, but the launcher is not.** Measured on windows-arm64, n=12 medians, spawn to first MCP `initialize` response:
+
+| invocation | time | vs node |
+|---|--:|--:|
+| `oam run dist/index.js` | 116 ms | **0.67x** |
+| `node dist/index.js` | 172 ms | 1.00x |
+| this launcher (node spawns oam) | 243 ms | 1.41x |
+
+npm `bin` entries are Node scripts, so reaching oam through one costs Node's startup *plus* oam's — more than oam saves. The launcher exists so `npx` users get oam automatically; it is not the fast path.
+
+**If you want oam's speed, point your MCP host straight at it** and skip the launcher:
+
+```json
+{ "mcpServers": { "npmjs": { "command": "oam", "args": ["run", "/abs/path/to/dist/index.js"] } } }
+```
+
+Benchmarking note: do not time a binary sitting in a cargo `target/` directory. On the machine these numbers came from, an active virus scanner rescanned it on every exec — the identical bytes copied elsewhere ran 5.0x faster. oam is pre-alpha; re-measure on your own hardware, using an installed binary.
+
+oam's `--permission` sandbox is deliberately **not** used: it denies network access and implements no grant to restore it, which would leave every registry call failing.
 
 **Alternate MCP clients:**
 

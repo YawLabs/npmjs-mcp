@@ -3,6 +3,7 @@ dist/
 *.tsbuildinfo
 .claude/*
 !.claude/settings.json
-bin/
+bin/*
+!bin/npmjs-mcp.mjs
 build-tmp/
 dist-release/

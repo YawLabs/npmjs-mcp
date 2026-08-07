@@ -24,9 +24,10 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "npmjs-mcp": "dist/index.js"
+    "npmjs-mcp": "bin/npmjs-mcp.mjs"
   },
   "files": [
+    "bin/npmjs-mcp.mjs",
     "dist/index.js"
   ],
   "scripts": {
@@ -37,7 +38,8 @@
     "test:ci": "npm run test",
     "lint": "biome check src/",
     "lint:fix": "biome check --write src/",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "dev:oam": "oam run --check=warn src/index.ts"
   },
   "overrides": {
     "hono": "^4.12.25",

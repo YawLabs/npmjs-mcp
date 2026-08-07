@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Runtime launcher at `bin/npmjs-mcp.mjs`: the published `npmjs-mcp` command now prefers the [oam](https://oamjs.org) runtime and falls back to Node. `NPMJS_MCP_RUNTIME` selects (`auto` / `oam` / `node`) and `OAM_BIN` overrides discovery. Both paths were verified against the full MCP surface — handshake, 64 tools, live registry call, and the destructive-op confirm gate — and behave identically, because the server is a pre-bundled ESM file using only `node:` builtins oam implements.
+- `dev:oam` script: `oam run --check=warn src/index.ts` runs the TypeScript source with no build step, type-checking concurrently rather than blocking execution.
+
+### Changed
+- `bin` points at the launcher rather than `dist/index.js` directly. The fallback does **not** re-exec Node — npm has already started Node to run the launcher, so it is an in-process `import()` with no extra spawn or startup for users without oam.
+- `.gitignore` now excludes `bin/*` rather than `bin/`, so the launcher can be re-included with a negation. A directory-level exclusion cannot be undone by a negation for a file inside it, which would have left the launcher untracked and absent from any fresh clone while still appearing to work locally.
+
+### Notes
+- **oam is faster than Node for this server; the launcher is not.** Windows-arm64, n=12 medians, spawn to first MCP `initialize`: `oam run dist/index.js` 116 ms (0.67x), `node dist/index.js` 172 ms, launcher 243 ms (1.41x). npm `bin` entries are Node scripts, so reaching oam through one pays Node's startup plus oam's — more than oam saves. Point an MCP host directly at `oam run <abs>/dist/index.js` for the fast path; the launcher is for `npx` convenience.
+- Benchmarking caveat worth recording: an earlier revision of these notes claimed oam was a regression (~382 ms Node vs ~510 ms oam). That was measuring a virus scanner, not a runtime — the oam binary was being run out of a cargo `target/` directory, which the active AV rescanned on every exec. The identical bytes copied elsewhere and run once to absorb the scan started **5.0x faster** (306 ms → 61 ms, interleaved and reproducible). Never benchmark out of a build-output directory on Windows.
+- oam's `--permission` sandbox is deliberately unused. Its own divergence notes record that it denies filesystem, environment **and network** access, and the only grants implemented are `--allow-fs-read/write`, `--allow-child-process`, `--allow-worker` and `--allow-addons`. With no network grant, enabling it produces a server that completes the MCP handshake and then fails every tool call — confirmed empirically before ruling it out.
+
 ## [0.13.0] -- 2026-08-07
 
 A second full-pass review over `src/` plus the build and release tooling. The headline items are a silent org-role demotion, a retry policy that could re-apply writes, and a release script whose "verify" step could fail an already-successful release.

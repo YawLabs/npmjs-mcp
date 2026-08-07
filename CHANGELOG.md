@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] -- 2026-08-07
+
 A second full-pass review over `src/` plus the build and release tooling. The headline items are a silent org-role demotion, a retry policy that could re-apply writes, and a release script whose "verify" step could fail an already-successful release.
 
 ### Fixed

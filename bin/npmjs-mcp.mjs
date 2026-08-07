@@ -41,14 +41,22 @@
  * regression; that number was measuring the virus scanner. oam is pre-alpha,
  * so re-measure regardless -- but measure an installed binary.
  *
- * WHAT WE DELIBERATELY DO NOT DO
- * oam's `--permission` model is not used. Its own divergence notes record that
- * `--permission` denies filesystem, environment AND network access, and the
- * only grants it implements are `--allow-fs-read/write`, `--allow-child-process`,
- * `--allow-worker` and `--allow-addons`. There is no network grant, and this
- * server exists to talk to the npm registry -- so enabling it produces a
- * process that completes the MCP handshake and then fails every tool call.
- * Confirmed empirically before it was ruled out.
+ * WHAT WE DELIBERATELY DO NOT DO -- FOR NOW
+ * oam's `--permission` model is not used. As of oam 0.8.2 its own divergence
+ * notes record that `--permission` denies filesystem, environment AND network
+ * access, while the only grants implemented are `--allow-fs-read/write`,
+ * `--allow-child-process`, `--allow-worker` and `--allow-addons`. There is no
+ * network grant, and this server exists to talk to the npm registry -- so
+ * enabling it produces a process that completes the MCP handshake and then
+ * fails every tool call. Confirmed empirically before it was ruled out.
+ *
+ * REVISIT THIS: an `--allow-net` / `--allow-env` grant is in flight upstream
+ * (oam branch `feat/allow-net-env-and-compile-carrier`). Once it ships, this
+ * server becomes a good candidate for `--permission --allow-net=registry.npmjs.org`
+ * with filesystem and subprocess denied outright -- it reads no files at
+ * runtime (the version is baked in at build time) and spawns nothing. That is
+ * real hardening for a process holding an NPM_TOKEN, so it is worth doing the
+ * moment the grant exists rather than leaving this comment to rot.
  *
  * SELECTION
  *   NPMJS_MCP_RUNTIME=oam    require oam; fail loudly if it is missing

@@ -195,7 +195,13 @@ async function buildViaOam() {
     console.log('');
     console.log(`OK  ${outExe}  (oam carrier, cross-built for ${TARGET})`);
     console.log(`    ${fmtSize(outExe)}`);
-    console.log('    NOT smoke-tested: cross-built artifacts must be run on the target before shipping.');
+    console.log('    NOT smoke-tested. Appending is proven for every target; EXECUTING is only');
+    console.log('    proven where the artifact can be run. Verify before shipping, via any of:');
+    console.log(`      - a ${TARGET} machine or CI runner`);
+    console.log(`      - WSL, if its arch matches (\`wsl uname -m\`) -- an aarch64 WSL cannot run`);
+    console.log('        an x86-64 build; it fails with "Exec format error"');
+    console.log('      - docker run --rm -v ...:/b <image> /b --version   (needs a running daemon,');
+    console.log('        and qemu binfmt for a foreign arch)');
     if (TARGET.startsWith('darwin')) {
       console.log('    macOS: appending invalidates any Mach-O signature and arm64 refuses to exec an');
       console.log('    unsigned/invalid one. Ad-hoc sign on a mac (codesign -s -) or with rcodesign.');

@@ -50,35 +50,55 @@
  * The numbers above are the ones that survive: installed binary, quiet machine,
  * interleaved, n=12. oam is pre-alpha -- re-measure on your own hardware.
  *
- * WHAT WE DELIBERATELY DO NOT DO -- FOR NOW
- * oam's `--permission` model is not used. As of oam 0.8.2 its own divergence
- * notes record that `--permission` denies filesystem, environment AND network
- * access, while the only grants implemented are `--allow-fs-read/write`,
- * `--allow-child-process`, `--allow-worker` and `--allow-addons`. There is no
- * network grant, and this server exists to talk to the npm registry -- so
- * enabling it produces a process that completes the MCP handshake and then
- * fails every tool call. Confirmed empirically before it was ruled out.
+ * THE `--permission` SANDBOX (oam 0.9.0+, opt-in)
+ * This used to be a "deliberately not done" note: oam's `--permission` denied
+ * network with no grant to open it, so the server completed the MCP handshake
+ * and then failed every tool call. oam 0.8.3 added `--allow-net` / `--allow-env`
+ * and the note is now obsolete -- `NPMJS_MCP_SANDBOX=1` opts in.
  *
- * REVISIT THIS: an `--allow-net` / `--allow-env` grant is in flight upstream
- * (oam branch `feat/allow-net-env-and-compile-carrier`). Once it ships, this
- * server becomes a good candidate for `--permission --allow-net=registry.npmjs.org`
- * with filesystem and subprocess denied outright -- it reads no files at
- * runtime (the version is baked in at build time) and spawns nothing. That is
- * real hardening for a process holding an NPM_TOKEN, so it is worth doing the
- * moment the grant exists rather than leaving this comment to rot.
+ * It is opt-in rather than default because a wrong grant list does NOT fail
+ * loudly. Measured on 0.9.0 with `--allow-net=registry.npmjs.org` alone:
+ * `npm_downloads` failed outright, but `npm_health` returned HTTP 200 with
+ * `weeklyDownloads: null` and no error at all -- the download counts come from
+ * api.npmjs.org, a second host. A silently half-populated answer is worse than
+ * a refusal, so the grant list below is derived from the shipped bundle rather
+ * than guessed, and a private registry has to be declared via NPM_REGISTRY.
+ *
+ * Same hazard, worse, for the environment: oam denies a non-granted variable by
+ * making it ABSENT from process.env rather than throwing (its divergence notes
+ * call this out -- process.env is a snapshot with no per-property hook). An
+ * under-granted NPM_TOKEN therefore reads as "unauthenticated", not "denied".
+ * The env list is the exact set the bundle reads.
+ *
+ * What the sandbox buys: filesystem and subprocess are denied outright. This
+ * server reads no files at runtime (its version is baked in at build time) and
+ * spawns nothing, so a dependency that suddenly wants either is stopped by the
+ * runtime rather than trusted -- meaningful for a process holding an NPM_TOKEN.
+ *
+ * MINIMUM OAM VERSION
+ * 0.9.0. Below it `child_process.execFile` ran its arguments through a SHELL,
+ * `exec`'s `timeout` was accepted and ignored, and `spawnSync` truncated at
+ * `maxBuffer` while reporting success. This server spawns nothing, so the floor
+ * is enforced here for consistency with the rest of @yawlabs/*-mcp rather than
+ * because this launcher is exposed. An older oam is not an error: the launcher
+ * falls back to Node and says why on stderr.
  *
  * SELECTION
  *   NPMJS_MCP_RUNTIME=oam    require oam; fail loudly if it is missing
  *   NPMJS_MCP_RUNTIME=node   never use oam
  *   NPMJS_MCP_RUNTIME=auto   prefer oam, silently fall back (default)
+ *   NPMJS_MCP_SANDBOX=1      run oam under --permission (oam 0.9.0+)
  *   OAM_BIN=/path/to/oam     explicit binary, checked before any discovery
  */
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { constants, homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+/** Oldest oam whose `child_process` matches Node. See MINIMUM OAM VERSION above. */
+const OAM_MIN = [0, 9, 0];
 
 // Two forms, deliberately. `import()` on Windows REJECTS a bare `C:\...` path
 // with ERR_UNSUPPORTED_ESM_URL_SCHEME (it reads `c:` as a protocol), so the
@@ -133,6 +153,76 @@ function findOam() {
   return null;
 }
 
+/**
+ * `oam --version` -> [major, minor, patch], or null when it cannot be read.
+ * The output is `oam 0.9.0`; a pre-release suffix (`0.9.0-rc.1`) is truncated
+ * at the first non-numeric character so it compares as its base version.
+ */
+function oamVersion(cmd) {
+  try {
+    const out = execFileSync(cmd, ["--version"], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const m = /(\d+)\.(\d+)\.(\d+)/.exec(out);
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  } catch {
+    // Not executable, wrong arch, or deleted since the stat. Caller degrades.
+    return null;
+  }
+}
+
+/** True when `v` is at least `min`, comparing major/minor/patch in order. */
+function atLeast(v, min) {
+  if (!v) return false;
+  for (let i = 0; i < min.length; i++) {
+    if (v[i] > min[i]) return true;
+    if (v[i] < min[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * The `--permission` grant list, or [] when the sandbox is not requested.
+ *
+ * These are oam's PROCESS-level flags: they go before the `run` subcommand, not
+ * after it. `oam run --permission file.js` is rejected outright ("unexpected
+ * argument '--permission' found"), which is a good failure -- but only because
+ * it is loud. Ordering here is load-bearing.
+ *
+ * Net grants are matched by prefix against `host` for fetch and `host:port` for
+ * sockets, so a bare hostname covers both.
+ */
+function sandboxFlags() {
+  if (process.env.NPMJS_MCP_SANDBOX !== "1") return [];
+
+  // Every host the shipped bundle can reach. api.npmjs.org is NOT optional --
+  // it serves the download counts that npm_health folds into its result, and
+  // omitting it produces a null-populated answer with no error (see the header).
+  const hosts = ["registry.npmjs.org", "api.npmjs.org", "replicate.npmjs.com"];
+  // A private registry is a different host, so the grant has to learn about it.
+  // Parsed rather than pasted: NPM_REGISTRY is a URL, the grant wants a host.
+  const registry = process.env.NPM_REGISTRY;
+  if (registry) {
+    try {
+      const { hostname } = new URL(registry);
+      if (hostname && !hosts.includes(hostname)) hosts.push(hostname);
+    } catch {
+      // Malformed NPM_REGISTRY: api.ts falls back to the public registry, which
+      // is already granted. Nothing to add, and this is not the place to warn.
+    }
+  }
+
+  // Exactly the variables the bundle reads. A denied variable is ABSENT rather
+  // than throwing, so this list being short is a correctness risk, not just a
+  // tightness one -- keep it in step with `grep process.env dist/index.js`.
+  const env = ["NPM_TOKEN", "NPM_REGISTRY", "NPM_REQUEST_TIMEOUT_MS", "NPM_RETRY_BACKOFF_MS", "DEBUG"];
+
+  // No --allow-fs-read/write and no --allow-child-process: denying both is the
+  // entire point. The server reads no files at runtime and spawns nothing.
+  return ["--permission", `--allow-net=${hosts.join(",")}`, `--allow-env=${env.join(",")}`];
+}
+
 /** Run the server in THIS process. The zero-overhead fallback. */
 async function runInProcess() {
   // A server may gate its bootstrap on being the process ENTRY POINT --
@@ -170,11 +260,31 @@ if (mode === "node") {
       process.exit(1);
     }
     await runInProcess();
+  } else if (!atLeast(oamVersion(oam), OAM_MIN)) {
+    // Discovery itself stays stat-only; this is the first subprocess, and it
+    // runs only once we have already decided to spawn oam anyway. Measured
+    // 26ms median (n=12, windows-arm64) against a launch that was going to
+    // spawn a process regardless, and it is paid once per MCP session.
+    const min = OAM_MIN.join(".");
+    if (mode === "oam") {
+      const { writeSync } = await import("node:fs");
+      writeSync(
+        2,
+        `npmjs-mcp: NPMJS_MCP_RUNTIME=oam but ${oam} is older than oam ${min}.\n` +
+          `Run \`oam self-update\`, or use NPMJS_MCP_RUNTIME=node.\n`,
+      );
+      process.exit(1);
+    }
+    // auto: an old oam is a reason to prefer Node, not to fail. Say so, because
+    // a silent downgrade is how someone keeps running an oam they meant to
+    // update. stderr is safe -- MCP frames travel on stdout.
+    process.stderr.write(`npmjs-mcp: oam at ${oam} is older than ${min}; using Node instead.\n`);
+    await runInProcess();
   } else {
     // `--` separates oam's own flags from the script's argv. Everything after
     // it lands in process.argv for the server, so `npmjs-mcp --version` and any
     // host-supplied flags survive the hop unchanged.
-    const child = spawn(oam, ["run", SERVER_ENTRY, "--", ...process.argv.slice(2)], {
+    const child = spawn(oam, [...sandboxFlags(), "run", SERVER_ENTRY, "--", ...process.argv.slice(2)], {
       // inherit keeps the SAME fds, so MCP's newline-delimited JSON framing on
       // stdin/stdout is untouched and the host's stdin-close still reaches the
       // server's shutdown path.

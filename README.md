@@ -311,7 +311,7 @@ name-to-versions map directly: `npm_audit({ packages: { lodash: ["4.17.20"] } })
 
 ## Requirements
 
-- Node.js 20+ (the CI matrix tests 20 and 22; `package.json` declares `engines.node: ">=20"`)
+- Node.js 20.11+ (`package.json` declares `engines.node: ">=20.11.0"`)
 - (Optional) npm access token for write operations
 
 ## Contributing

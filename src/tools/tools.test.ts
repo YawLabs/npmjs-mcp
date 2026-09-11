@@ -49,21 +49,21 @@ describe("Tool definitions", () => {
     // Derived from the sum of per-module counts below so it stays in sync
     // automatically when a module gains or loses tools.
     const expectedTotal =
-      1 +  // searchTools
-      6 +  // packageTools
-      3 +  // dependencyTools
-      4 +  // downloadTools
-      3 +  // securityTools
-      4 +  // analysisTools
-      3 +  // registryTools
-      5 +  // authTools
-      5 +  // orgTools
-      2 +  // accessTools
-      1 +  // provenanceTools
-      1 +  // trustTools
-      2 +  // workflowTools
+      1 + // searchTools
+      6 + // packageTools
+      3 + // dependencyTools
+      4 + // downloadTools
+      3 + // securityTools
+      4 + // analysisTools
+      3 + // registryTools
+      5 + // authTools
+      5 + // orgTools
+      2 + // accessTools
+      1 + // provenanceTools
+      1 + // trustTools
+      2 + // workflowTools
       19 + // writeTools
-      5;   // hookTools
+      5; // hookTools
     assert.equal(allTools.length, expectedTotal);
   });
 
@@ -125,12 +125,7 @@ describe("Destructive annotations", () => {
   // Pins the classification so a new write tool has to make a deliberate call,
   // and so a future refactor can't quietly re-flag the additive ops as
   // destructive (or, worse, de-flag a genuinely destructive one).
-  const ADDITIVE_WRITES = [
-    "npm_owner_add",
-    "npm_team_create",
-    "npm_team_member_add",
-    "npm_hook_add",
-  ];
+  const ADDITIVE_WRITES = ["npm_owner_add", "npm_team_create", "npm_team_member_add", "npm_hook_add"];
 
   for (const name of ADDITIVE_WRITES) {
     it(`${name} is a write but not destructive`, () => {

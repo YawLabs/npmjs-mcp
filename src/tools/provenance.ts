@@ -54,9 +54,7 @@ export const provenanceTools = [
           version: input.version,
           attestationCount: attestations.length,
           hasProvenance: attestations.some((a) => a.predicateType.startsWith("https://slsa.dev/provenance")),
-          hasPublishAttestation: attestations.some((a) =>
-            a.predicateType.startsWith("https://npmjs.com/attestation"),
-          ),
+          hasPublishAttestation: attestations.some((a) => a.predicateType.startsWith("https://npmjs.com/attestation")),
           attestations,
         },
       };

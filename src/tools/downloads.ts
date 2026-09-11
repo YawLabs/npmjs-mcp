@@ -19,7 +19,9 @@ export const downloadTools = [
       period: z
         .string()
         .optional()
-        .describe("Period: 'last-day', 'last-week', 'last-month', 'last-year', or 'YYYY-MM-DD:YYYY-MM-DD' (default: 'last-week')"),
+        .describe(
+          "Period: 'last-day', 'last-week', 'last-month', 'last-year', or 'YYYY-MM-DD:YYYY-MM-DD' (default: 'last-week')",
+        ),
     }),
     handler: async (input: { name: string; period?: string }) => {
       const period = input.period ?? "last-week";

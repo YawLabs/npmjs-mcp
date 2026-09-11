@@ -93,9 +93,7 @@ export const writeTools = [
     },
     inputSchema: z.object({
       name: z.string().describe("Package name (e.g. '@yawlabs/spend')"),
-      message: z
-        .string()
-        .describe("Deprecation message. Use npm_undeprecate to clear."),
+      message: z.string().describe("Deprecation message. Use npm_undeprecate to clear."),
       versionRange: z
         .string()
         .optional()
@@ -780,7 +778,9 @@ export const writeTools = [
     },
     inputSchema: z.object({
       name: z.string().describe("Package name"),
-      access: z.enum(["public", "private", "restricted"]).describe("Access level ('private' maps to 'restricted' on the wire)"),
+      access: z
+        .enum(["public", "private", "restricted"])
+        .describe("Access level ('private' maps to 'restricted' on the wire)"),
     }),
     handler: async (input: { name: string; access: "public" | "private" | "restricted" }) => {
       const authErr = requireAuth();

@@ -152,7 +152,8 @@ export function validatePeriod(period: string): string | null {
   if (typeof period !== "string" || period.length === 0) return "Period is empty";
   if (DOWNLOAD_PERIOD_KEYWORDS.has(period)) return null;
   const [start, end, ...rest] = period.split(":");
-  if (rest.length > 0) return `Invalid period '${period}'. A date range takes exactly two dates ('YYYY-MM-DD:YYYY-MM-DD').`;
+  if (rest.length > 0)
+    return `Invalid period '${period}'. A date range takes exactly two dates ('YYYY-MM-DD:YYYY-MM-DD').`;
   if (ISO_DATE.test(start) && (end === undefined || ISO_DATE.test(end))) return null;
   return (
     `Invalid period '${period}'. Use one of ${[...DOWNLOAD_PERIOD_KEYWORDS].join(", ")}, ` +

@@ -73,7 +73,12 @@ export const dependencyTools = [
     inputSchema: z.object({
       name: z.string().describe("Package name"),
       version: z.string().optional().describe("Semver version or dist-tag (default: 'latest')"),
-      depth: z.number().min(1).max(5).optional().describe("Max tree depth where the root counts as level 1 (default 3 = root + 2 transitive levels, max 5)"),
+      depth: z
+        .number()
+        .min(1)
+        .max(5)
+        .optional()
+        .describe("Max tree depth where the root counts as level 1 (default 3 = root + 2 transitive levels, max 5)"),
     }),
     handler: async (input: { name: string; version?: string; depth?: number }) => {
       const maxDepth = input.depth ?? 3;

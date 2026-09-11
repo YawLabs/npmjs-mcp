@@ -3,6 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@yawlabs/npmjs-mcp)](https://www.npmjs.com/package/@yawlabs/npmjs-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![GitHub stars](https://img.shields.io/github/stars/YawLabs/npmjs-mcp)](https://github.com/YawLabs/npmjs-mcp/stargazers)
+[![Follow @TokenLimitNews on X](https://img.shields.io/badge/follow-%40TokenLimitNews-000000?logo=x&logoColor=white)](https://x.com/TokenLimitNews)
 
 **Run npm registry operations from Claude Code, Cursor, and any MCP client.** 64 tools covering the full registry surface: package intelligence, security audits, dependency analysis, org/team management, and the write ops that normally fight you locally (`npm deprecate`, `npm dist-tag`, `npm owner`, `npm unpublish`).
 

@@ -211,7 +211,9 @@ export const hookTools = [
       endpoint: httpsEndpoint.describe("HTTPS URL for the hook (required — the PUT replaces the whole config)"),
       secret: z
         .string()
-        .describe("Signing secret to store. Always written; pass the existing secret to leave it effectively unchanged."),
+        .describe(
+          "Signing secret to store. Always written; pass the existing secret to leave it effectively unchanged.",
+        ),
     }),
     handler: async (input: { id: string; endpoint: string; secret: string }) => {
       const authErr = requireAuth();

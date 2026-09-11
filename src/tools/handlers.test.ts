@@ -2352,7 +2352,11 @@ describe("Types handler", () => {
         data: { typesPackage: unknown; recommendation: string; typesLookupReliable: boolean };
       };
       assert.equal(result.data.typesLookupReliable, false);
-      assert.equal(result.data.typesPackage, null, "null here means 'unknown', which typesLookupReliable disambiguates");
+      assert.equal(
+        result.data.typesPackage,
+        null,
+        "null here means 'unknown', which typesLookupReliable disambiguates",
+      );
       assert.match(result.data.recommendation, /Could not determine/);
       assert.equal(
         /No TypeScript types available/.test(result.data.recommendation),

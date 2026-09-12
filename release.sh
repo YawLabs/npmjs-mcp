@@ -99,19 +99,25 @@ assert_changelog_promoted() {
 # no-ops.
 #
 # THIS SHOULD NOW BE UNNECESSARY, and reaching for it is a signal something
-# regressed. `npm run lint` routes through scripts/lint.mjs, which picks a
-# biome binary that works on the host -- including Windows ARM64, where the
-# native arm64 build segfaults and the wrapper provisions the x64 build to run
-# under emulation instead. Verified: `npm run lint` exits 0 on that host.
+# regressed. `npm run lint` routes through scripts/lint.mjs, which runs biome
+# at the version this repo's lockfile installs, on a binary that works on the
+# host. On Windows ARM64 that means the x64 build of that same version under
+# emulation, because the native arm64 build of SOME biome releases crashes
+# rather than running -- measured on that host: 2.5.4 exits 139, while 2.4.16
+# and 2.5.13 run correctly. Verified: `npm run lint` exits 0 there.
 #
-# The earlier text here blamed "the MINGW64-ARM64 npm-run-script wrapper" and
-# justified skipping with "CI catches lint regressions anyway". Both were wrong.
-# `npm run` is fine on that host; the SIGSEGV comes from
-# `@biomejs/cli-win32-arm64/biome.exe` itself, reproducible by invoking that
-# binary directly with no npm in the picture. And this repo has NO CI -- its
-# workflows were removed in b2c256c and Actions is disabled on the repository
-# -- so nothing downstream re-checks formatting. Skipping the lint step means
-# the release is published unlinted, full stop.
+# Two things the earlier text here got wrong, recorded so they do not get
+# re-diagnosed. It blamed "the MINGW64-ARM64 npm-run-script wrapper": `npm run`
+# is fine on that host, and a plain node script through the same wrapper exits
+# 0. And the crash is not a permanent property of arm64 -- it is specific to
+# the biome release installed, which is why the wrapper provisions the x64
+# build of THAT version rather than assuming the architecture is broken.
+#
+# The earlier text also justified skipping with "CI catches lint regressions
+# anyway". This repo has NO CI -- its workflows were removed in b2c256c and
+# Actions is disabled on the repository -- so nothing downstream re-checks
+# formatting. Skipping the lint step means the release is published unlinted,
+# full stop.
 #
 # So: only set SKIP_LINT=1 if scripts/lint.mjs cannot produce a result at all,
 # and treat that as a bug to fix rather than a step to routinely skip.
@@ -208,13 +214,15 @@ step 1 "Lint"
 
 # A crashed linter is not a lint result -- and not a pass either, so a crash
 # STOPS the release. On Windows ARM64 the native
-# node_modules/@biomejs/cli-win32-arm64/biome.exe segfaults (139 under bash,
-# 3221225477 / 0xC0000005 under PowerShell) whether invoked through npm or
-# directly, so it is the binary, not npm's exit path. `npm run lint` now routes
-# through scripts/lint.mjs, which runs the x64 build under emulation on that
-# host and turns any biome crash into a labelled exit 1. A raw crash code
-# reaching this point means the wrapper was bypassed, overridden
-# (YAWLABS_BIOME_BIN / YAWLABS_BIOME_NATIVE), or regressed.
+# node_modules/@biomejs/cli-win32-arm64/biome.exe can crash instead of running
+# (measured at biome 2.5.4: 139 under bash, 3221225477 / 0xC0000005 under
+# PowerShell, through npm and invoked directly alike -- so it is that release's
+# binary, not npm's exit path; 2.4.16 and 2.5.13 run fine on the same host).
+# `npm run lint` now routes through scripts/lint.mjs, which runs the x64 build
+# of the INSTALLED version under emulation on that host and turns any biome
+# crash into a labelled exit 1. A raw crash code reaching this point means the
+# wrapper was bypassed, overridden (YAWLABS_BIOME_BIN / YAWLABS_BIOME_NATIVE),
+# or regressed.
 #
 # This used to warn "Lint is UNVERIFIED" and let the release continue. With no
 # CI on this repo, that published an unlinted release with nothing downstream to
@@ -229,7 +237,7 @@ else
   if [ "$LINT_RC" -eq 139 ] || [ "$LINT_RC" -eq 3221225477 ]; then
     cat "$LINT_OUT"
     rm -f "$LINT_OUT"
-    fail "Lint runner CRASHED (exit $LINT_RC) -- no lint result, so the release stops here. scripts/lint.mjs should route around the Windows ARM64 biome crash; check the YAWLABS_BIOME_BIN / YAWLABS_BIOME_NATIVE overrides. Last resort, publishing unlinted: re-run with SKIP_LINT=1."
+    fail "Lint runner CRASHED (exit $LINT_RC) -- no lint result, so the release stops here. scripts/lint.mjs should route around a crashing native biome binary by running the x64 build of the installed version; check the YAWLABS_BIOME_BIN / YAWLABS_BIOME_NATIVE overrides. Last resort, publishing unlinted: re-run with SKIP_LINT=1."
   else
     cat "$LINT_OUT"
     rm -f "$LINT_OUT"

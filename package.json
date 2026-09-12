@@ -2,7 +2,7 @@
   "name": "@yawlabs/npmjs-mcp",
   "version": "0.15.1",
   "mcpName": "io.github.YawLabs/npmjs-mcp",
-  "description": "npm registry MCP server — package intelligence, security audits, and dependency analysis for AI assistants",
+  "description": "npm MCP server: registry tools for package metadata, security audits, dependency trees, and write ops (deprecate, dist-tag, owner).",
   "license": "MIT",
   "author": "YawLabs <contact@yaw.sh>",
   "repository": {
@@ -12,14 +12,24 @@
   "keywords": [
     "npm",
     "npmjs",
+    "npm-registry",
     "registry",
     "mcp",
+    "mcp-server",
     "model-context-protocol",
     "ai",
+    "agent",
+    "claude",
+    "claude-code",
+    "claude-desktop",
+    "cursor",
+    "windsurf",
+    "vscode",
     "packages",
+    "dependencies",
     "security",
     "audit",
-    "dependencies"
+    "provenance"
   ],
   "type": "module",
   "main": "dist/index.js",
@@ -56,5 +66,6 @@
   },
   "engines": {
     "node": ">=20.11.0"
-  }
+  },
+  "homepage": "https://yaw.sh/mcp-servers/npmjs-mcp/"
 }

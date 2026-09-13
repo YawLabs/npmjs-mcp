@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -14,8 +15,25 @@ const DIST_BIN = resolve(repoRoot, "dist", "index.js");
 const PACKAGE_VERSION = (JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf-8")) as { version: string })
   .version;
 
-type Plan = "in-process" | "discover";
+type Plan = "in-process" | "discover" | "handoff-node";
 type RuntimePlan = (ctx: { mode: string; hostOam: string | undefined; sandbox: boolean }) => Plan;
+type Candidate = { path: string; version: number[] | null };
+type PickNewest = (candidates: Candidate[]) => Candidate | null;
+
+/** Pull named declarations out of the launcher source, loudly. */
+function extract(patterns: RegExp[]): string {
+  const source = readFileSync(LAUNCHER, "utf-8");
+  return patterns
+    .map((pattern) => {
+      const match = source.match(pattern);
+      if (!match) throw new Error(`could not extract ${pattern} from bin/npmjs-mcp.mjs -- renamed or reformatted?`);
+      return match[0];
+    })
+    .join("\n");
+}
+
+const OAM_MIN_DECL = /const OAM_MIN = \[[^\]]*\];/;
+const ATLEAST_DECL = /function atLeast\(v, min\) \{[\s\S]*?\n\}/;
 
 /**
  * Evaluate the REAL `runtimePlan` source, together with the declarations it
@@ -33,18 +51,21 @@ type RuntimePlan = (ctx: { mode: string; hostOam: string | undefined; sandbox: b
  * drift, and a failed extraction is a loud assertion, not a silent skip.
  */
 function loadRuntimePlan(): RuntimePlan {
-  const source = readFileSync(LAUNCHER, "utf-8");
-  const pieces = [
-    /const OAM_MIN = \[[^\]]*\];/,
+  const pieces = extract([
+    OAM_MIN_DECL,
     /function parseVersion\(text\) \{[\s\S]*?\n\}/,
-    /function atLeast\(v, min\) \{[\s\S]*?\n\}/,
+    ATLEAST_DECL,
     /function runtimePlan\(\{ mode, hostOam, sandbox \}\) \{[\s\S]*?\n\}/,
-  ].map((pattern) => {
-    const match = source.match(pattern);
-    if (!match) throw new Error(`could not extract ${pattern} from bin/npmjs-mcp.mjs -- renamed or reformatted?`);
-    return match[0];
-  });
-  return new Function(`${pieces.join("\n")}\nreturn runtimePlan;`)() as RuntimePlan;
+  ]);
+  return new Function(`${pieces}\nreturn runtimePlan;`)() as RuntimePlan;
+}
+
+function loadPickNewest(): { pickNewest: PickNewest; floor: number[] } {
+  const pieces = extract([OAM_MIN_DECL, ATLEAST_DECL, /function pickNewest\(candidates\) \{[\s\S]*?\n\}/]);
+  return new Function(`${pieces}\nreturn { pickNewest, floor: OAM_MIN };`)() as {
+    pickNewest: PickNewest;
+    floor: number[];
+  };
 }
 
 describe("launcher runtimePlan()", () => {
@@ -56,11 +77,11 @@ describe("launcher runtimePlan()", () => {
     // asking what it was already running on. `auto` and `oam` both have to take
     // the shortcut -- `oam` demands oam, and the host already is one.
     //
-    // 0.9.0 pins the floor as inclusive (it IS the supported release), and
-    // 0.10.0 pins a numeric compare: it sorts BEFORE 0.9.0 as a string, so a
-    // compare over the raw text would spawn a nested oam on every 0.10+ host.
+    // 0.15.2 pins the floor as inclusive (it IS the supported release), and
+    // 0.100.0 pins a numeric compare: it sorts BEFORE 0.15.2 as a string, so a
+    // compare over the raw text would treat a newer oam as too old.
     for (const mode of ["auto", "oam"]) {
-      for (const hostOam of ["0.9.0", "0.10.0", "0.15.1", "1.0.0", "0.16.0-dev"]) {
+      for (const hostOam of ["0.15.2", "0.16.0", "0.100.0", "1.0.0", "0.16.0-dev"]) {
         assert.equal(runtimePlan({ mode, hostOam, sandbox: false }), "in-process", `mode=${mode} hostOam=${hostOam}`);
       }
     }
@@ -72,15 +93,18 @@ describe("launcher runtimePlan()", () => {
     // for -- a security downgrade that no other symptom would reveal, in a
     // process that may be holding an NPM_TOKEN.
     for (const mode of ["auto", "oam"]) {
-      assert.equal(runtimePlan({ mode, hostOam: "0.15.1", sandbox: true }), "discover", `mode=${mode}`);
+      for (const hostOam of [undefined, "0.15.2", "1.0.0"]) {
+        assert.equal(runtimePlan({ mode, hostOam, sandbox: true }), "discover", `mode=${mode} hostOam=${hostOam}`);
+      }
     }
   });
 
-  it("leaves a host oam below the floor on the discovery path", () => {
-    // Same floor as a discovered binary. Below it, behaviour is exactly what it
-    // was before the shortcut existed.
+  it("never serves in-process on a host oam below the floor", () => {
+    // Below the floor the host must hand off. Serving there was the bug: an oam
+    // older than the latest release is not what the server is verified on, and
+    // one older than 0.9.0 does not even hand over inherited stdio.
     for (const mode of ["auto", "oam"]) {
-      for (const hostOam of ["0.8.9", "0.8.2", "0.0.1"]) {
+      for (const hostOam of ["0.15.1", "0.9.0", "0.8.2", "0.0.1"]) {
         assert.equal(runtimePlan({ mode, hostOam, sandbox: false }), "discover", `mode=${mode} hostOam=${hostOam}`);
       }
     }
@@ -96,10 +120,46 @@ describe("launcher runtimePlan()", () => {
     }
   });
 
-  it("runs NPMJS_MCP_RUNTIME=node in-process whatever the host is", () => {
-    for (const hostOam of [undefined, "0.8.2", "0.15.1"]) {
-      assert.equal(runtimePlan({ mode: "node", hostOam, sandbox: false }), "in-process", `hostOam=${hostOam}`);
+  it("runs NPMJS_MCP_RUNTIME=node on Node: in-process on a Node host, handed off from any oam host", () => {
+    // `node` outranks the sandbox: Node has no --permission to apply.
+    for (const sandbox of [false, true]) {
+      assert.equal(runtimePlan({ mode: "node", hostOam: undefined, sandbox }), "in-process", `sandbox=${sandbox}`);
+      for (const hostOam of ["0.8.2", "0.15.2", "1.0.0", "dev"]) {
+        assert.equal(
+          runtimePlan({ mode: "node", hostOam, sandbox }),
+          "handoff-node",
+          `hostOam=${hostOam} sandbox=${sandbox}`,
+        );
+      }
     }
+  });
+});
+
+describe("launcher pickNewest()", () => {
+  const { pickNewest, floor } = loadPickNewest();
+  const at = (path: string, version: number[] | null): Candidate => ({ path, version });
+
+  it("pins the floor to the latest oam release", () => {
+    assert.deepEqual(floor, [0, 15, 2]);
+  });
+
+  it("takes the newest usable oam, not the first one found", () => {
+    // The bug: discovery stopped at the first binary that existed, so an older
+    // copy in an earlier location (the installed dir is searched before PATH)
+    // hid a newer one later.
+    const chosen = pickNewest([at("installed", [0, 15, 2]), at("path-a", [0, 16, 0]), at("path-b", [0, 15, 9])]);
+    assert.equal(chosen?.path, "path-a");
+  });
+
+  it("compares numerically and keeps search order on a tie", () => {
+    assert.equal(pickNewest([at("a", [0, 16, 0]), at("b", [0, 100, 0])])?.path, "b");
+    assert.equal(pickNewest([at("first", [0, 15, 2]), at("second", [0, 15, 2])])?.path, "first");
+  });
+
+  it("skips binaries below the floor or with no readable version", () => {
+    assert.equal(pickNewest([at("old", [0, 9, 0]), at("broken", null), at("good", [0, 15, 2])])?.path, "good");
+    assert.equal(pickNewest([at("old", [0, 15, 1]), at("broken", null)]), null);
+    assert.equal(pickNewest([]), null);
   });
 });
 
@@ -118,30 +178,45 @@ type LauncherRun = { stdout: string; stderr: string; code: number | null };
  * OAM_BIN is pinned to the Node binary running this test, which makes the two
  * outcomes unmistakable without a real oam. In-process, `--version` reaches
  * dist/index.js and prints the package version with exit 0. On the discovery
- * path, findOam returns that pinned Node, `node --version` clears the floor,
- * and the launcher spawns `node [flags] run <entry>` -- which has no `run`
- * subcommand, prints no version and exits non-zero. It also keeps a real oam
- * installed on the developer's box out of reach, since findOam checks the
- * override first and never scans past it.
+ * path, the pinned Node answers `--version` with v20+, which clears the floor,
+ * so it is chosen and the launcher spawns `node [flags] run <entry>` -- which
+ * has no `run` subcommand, prints no version and exits non-zero. A usable
+ * OAM_BIN is taken before discovery runs, so a real oam on the developer's box
+ * is never reached either.
  *
  * Env is a whitelist so an NPMJS_MCP_* var exported by the developer's shell
  * cannot change what is being asserted.
  */
-function runLauncher(hostOam: string | undefined, extraEnv: Record<string, string> = {}): Promise<LauncherRun> {
-  const preload =
+function launcherCommand(
+  hostOam: string | undefined,
+  extraEnv: Record<string, string>,
+  extraPreload: string,
+  args: string[],
+): { argv: string[]; env: Record<string, string> } {
+  // Every run also reports, at exit, what the LAUNCHER process's argv[1] ended
+  // up as. runInProcess points it at dist/index.js; a handoff leaves it on the
+  // launcher. That is the only way to tell "served in-process" from "handed
+  // off to a child that printed the same version".
+  const exitMarker = `import { writeSync } from "node:fs"; process.on("exit", () => { try { writeSync(2, "LAUNCHER_ARGV1=" + process.argv[1] + "\\n"); } catch {} });`;
+  const posing =
     hostOam === undefined
-      ? []
-      : [
-          "--import",
-          `data:text/javascript,${encodeURIComponent(
-            `Object.defineProperty(process.versions, "oam", { value: ${JSON.stringify(hostOam)}, enumerable: true });`,
-          )}`,
-        ];
+      ? ""
+      : `Object.defineProperty(process.versions, "oam", { value: ${JSON.stringify(hostOam)}, enumerable: true });`;
+  const preload = ["--import", `data:text/javascript,${encodeURIComponent(`${exitMarker}${posing}${extraPreload}`)}`];
+  return {
+    argv: [...preload, LAUNCHER, ...args],
+    env: { PATH: process.env.PATH ?? "", OAM_BIN: process.execPath, ...extraEnv },
+  };
+}
+
+function runLauncher(
+  hostOam: string | undefined,
+  extraEnv: Record<string, string> = {},
+  extraPreload = "",
+): Promise<LauncherRun> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(process.execPath, [...preload, LAUNCHER, "--version"], {
-      env: { PATH: process.env.PATH ?? "", OAM_BIN: process.execPath, ...extraEnv },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const { argv, env } = launcherCommand(hostOam, extraEnv, extraPreload, ["--version"]);
+    const child = spawn(process.execPath, argv, { env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
@@ -158,17 +233,75 @@ function runLauncher(hostOam: string | undefined, extraEnv: Record<string, strin
   });
 }
 
+type ServedRun = LauncherRun & { answered: boolean; exitedBeforeStdinEnd: boolean };
+
+/**
+ * Run the REAL bin the way a host does -- no `--version`, stdin held open, one
+ * MCP `initialize` sent at once -- then, `holdMs` after the answer, end stdin
+ * and wait for the launcher to exit.
+ *
+ * runLauncher cannot show a launcher that dies AFTER an in-process server has
+ * started: the server handles `--version` during its own module evaluation and
+ * exits before anything else queued on the event loop runs. A session held open
+ * can.
+ */
+function serveLauncher(
+  hostOam: string | undefined,
+  extraEnv: Record<string, string>,
+  extraPreload: string,
+  holdMs: number,
+): Promise<ServedRun> {
+  return new Promise((resolvePromise, reject) => {
+    const { argv, env } = launcherCommand(hostOam, extraEnv, extraPreload, []);
+    const child = spawn(process.execPath, argv, { env, stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let answered = false;
+    let stdinEnded = false;
+    // Never leave a server behind when it neither answers nor exits.
+    const deadline = setTimeout(() => child.kill(), 30_000);
+    const initialize = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "launcher-test", version: "0" } },
+    };
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+      if (answered || !/"id":1[,}]/.test(stdout)) return;
+      answered = true;
+      setTimeout(() => {
+        stdinEnded = true;
+        child.stdin.end();
+      }, holdMs);
+    });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.stdin.on("error", () => {});
+    child.on("error", reject);
+    child.on("close", (code) => {
+      clearTimeout(deadline);
+      resolvePromise({ stdout, stderr, code, answered, exitedBeforeStdinEnd: !stdinEnded });
+    });
+    child.stdin.write(`${JSON.stringify(initialize)}\n`);
+  });
+}
+
+// The in-process path imports dist/index.js, so the process-level tests need a
+// build. `npm test` always builds first; skip rather than fail when the compiled
+// test file is run on its own against a tree without one.
+const skip = existsSync(DIST_BIN) ? false : "dist/index.js is not built";
+// Each case boots one to three Node processes, and a bare Node start has been
+// measured at ~11s on a contended Windows box.
+const timeout = 45_000;
+
+const servedInProcess = (run: LauncherRun) =>
+  run.code === 0 && run.stdout.trim() === PACKAGE_VERSION && /LAUNCHER_ARGV1=.*dist[\\/]index\.js/.test(run.stderr);
+
 describe("launcher on an oam host", () => {
-  // The in-process path imports dist/index.js, so these need a build. `npm test`
-  // always builds first; skip rather than fail when the compiled test file is
-  // run on its own against a tree without one.
-  const skip = existsSync(DIST_BIN) ? false : "dist/index.js is not built";
-  // Each case boots one to three Node processes, and a bare Node start has been
-  // measured at ~11s on a contended Windows box.
-  const timeout = 45_000;
-
-  const servedInProcess = (run: LauncherRun) => run.code === 0 && run.stdout.trim() === PACKAGE_VERSION;
-
   it("control: on plain Node the launcher still discovers and spawns", { skip, timeout }, async () => {
     // Without this, the in-process cases below would also pass for a launcher
     // that ALWAYS runs in-process and never uses oam at all.
@@ -180,13 +313,13 @@ describe("launcher on an oam host", () => {
   it("serves in-process instead of spawning a nested oam", { skip, timeout }, async () => {
     const envs: Record<string, string>[] = [{}, { NPMJS_MCP_RUNTIME: "oam" }];
     for (const extraEnv of envs) {
-      const run = await runLauncher("0.15.1", extraEnv);
+      const run = await runLauncher("0.15.2", extraEnv);
       assert.equal(servedInProcess(run), true, `${JSON.stringify(extraEnv)} -> ${JSON.stringify(run)}`);
     }
   });
 
   it("still spawns under NPMJS_MCP_SANDBOX=1, so --permission is not dropped", { skip, timeout }, async () => {
-    const run = await runLauncher("0.15.1", { NPMJS_MCP_SANDBOX: "1" });
+    const run = await runLauncher("0.15.2", { NPMJS_MCP_SANDBOX: "1" });
     assert.equal(servedInProcess(run), false, `the sandbox must force a spawn, got ${JSON.stringify(run)}`);
     assert.notEqual(run.code, 0);
     // A spawned child failing, not the launcher diagnosing: every launcher
@@ -195,8 +328,151 @@ describe("launcher on an oam host", () => {
   });
 
   it("still discovers when the host oam is below the floor", { skip, timeout }, async () => {
-    const run = await runLauncher("0.8.9");
+    const run = await runLauncher("0.15.1");
     assert.equal(servedInProcess(run), false, `a below-floor host must not shortcut, got ${JSON.stringify(run)}`);
     assert.notEqual(run.code, 0);
+    assert.doesNotMatch(run.stderr, /^npmjs-mcp: /m);
+  });
+});
+
+describe("launcher with no usable oam", () => {
+  /**
+   * An environment with no oam anywhere: HOME and LOCALAPPDATA point at an
+   * empty directory, so the installed locations are empty, and PATH holds only
+   * the directory of the Node running this test. Keeps a real oam on the
+   * developer's box out of reach.
+   */
+  function isolated(extra: Record<string, string> = {}): Record<string, string> {
+    const empty = mkdtempSync(join(tmpdir(), "npmjs-mcp-launcher-home-"));
+    return {
+      PATH: dirname(process.execPath),
+      USERPROFILE: empty,
+      HOME: empty,
+      LOCALAPPDATA: empty,
+      ...extra,
+    };
+  }
+  const missingOamBin = join(tmpdir(), "no-such-dir", "oam.exe");
+
+  it("names an OAM_BIN that does not exist instead of falling back silently", { skip, timeout }, async () => {
+    const run = await runLauncher(undefined, isolated({ OAM_BIN: missingOamBin }));
+    assert.equal(servedInProcess(run), true, JSON.stringify(run));
+    assert.match(run.stderr, /^npmjs-mcp: OAM_BIN=.*does not exist; using Node instead\.$/m);
+  });
+
+  it("hands a below-floor oam host off to Node rather than serving on it", { skip, timeout }, async () => {
+    const run = await runLauncher("0.9.0", isolated({ OAM_BIN: missingOamBin }));
+    assert.equal(run.code, 0, JSON.stringify(run));
+    assert.equal(run.stdout.trim(), PACKAGE_VERSION, "the Node child must still serve");
+    assert.match(
+      run.stderr,
+      /this process is oam 0\.9\.0, older than 0\.15\.2, and no newer oam was found; running on .*node/,
+    );
+    // Served by the child, not in the launcher process: argv[1] was never
+    // pointed at dist/index.js.
+    assert.match(run.stderr, /LAUNCHER_ARGV1=.*npmjs-mcp\.mjs/);
+  });
+
+  it("refuses to serve on a below-floor oam host when there is no Node either", { skip, timeout }, async () => {
+    const empty = isolated();
+    const noNode = mkdtempSync(join(tmpdir(), "npmjs-mcp-launcher-nopath-"));
+    const run = await runLauncher("0.9.0", { ...empty, PATH: noNode, OAM_BIN: join(noNode, "oam.exe") });
+    assert.equal(run.code, 1, JSON.stringify(run));
+    assert.equal(run.stdout.trim(), "", "nothing may be served");
+    assert.match(run.stderr, /no Node was found on PATH/);
+  });
+
+  it("hands NPMJS_MCP_RUNTIME=node off to Node even on a supported oam host", { skip, timeout }, async () => {
+    const run = await runLauncher("0.15.2", isolated({ NPMJS_MCP_RUNTIME: "node", NPMJS_MCP_SANDBOX: "1" }));
+    assert.equal(run.code, 0, JSON.stringify(run));
+    assert.equal(run.stdout.trim(), PACKAGE_VERSION);
+    assert.match(run.stderr, /LAUNCHER_ARGV1=.*npmjs-mcp\.mjs/);
+  });
+
+  it("says a requested sandbox was dropped when auto falls back to Node", { skip, timeout }, async () => {
+    const run = await runLauncher(undefined, isolated({ NPMJS_MCP_SANDBOX: "1", OAM_BIN: missingOamBin }));
+    assert.equal(servedInProcess(run), true, JSON.stringify(run));
+    assert.match(
+      run.stderr,
+      /^npmjs-mcp: OAM_BIN=.*does not exist; NPMJS_MCP_SANDBOX=1 is not applied .*; using Node instead\.$/m,
+    );
+  });
+
+  it("serves on a supported oam host, unsandboxed and said so, when the sandbox finds no oam", {
+    skip,
+    timeout,
+  }, async () => {
+    // The host is itself a supported oam, so under `auto` the best-effort
+    // sandbox degrades to the in-process shortcut -- not to a Node handoff.
+    const run = await runLauncher("0.15.2", isolated({ NPMJS_MCP_SANDBOX: "1", OAM_BIN: missingOamBin }));
+    assert.equal(servedInProcess(run), true, JSON.stringify(run));
+    assert.match(run.stderr, /NPMJS_MCP_SANDBOX=1 is not applied .*; serving on this oam 0\.15\.2 process instead\.$/m);
+  });
+
+  it("makes an unavailable sandbox fatal under NPMJS_MCP_RUNTIME=oam", { skip, timeout }, async () => {
+    const run = await runLauncher(
+      "0.15.2",
+      isolated({ NPMJS_MCP_SANDBOX: "1", NPMJS_MCP_RUNTIME: "oam", OAM_BIN: missingOamBin }),
+    );
+    assert.equal(run.code, 1, JSON.stringify(run));
+    assert.equal(run.stdout.trim(), "", "nothing may be served");
+    assert.match(run.stderr, /^npmjs-mcp: NPMJS_MCP_RUNTIME=oam but no usable oam \(0\.15\.2 or newer\) was found\.$/m);
+  });
+
+  /**
+   * The chosen binary passed its --version probe and then could not be spawned
+   * (deleted or replaced in between). A failed spawn emits 'error' and then
+   * 'close' with the negative errno, and on an oam host the launcher waits for
+   * 'close' -- so an unguarded close handler exited the launcher mid-fallback
+   * and nothing served. This preload makes the FIRST spawn target a path that
+   * does not exist; any later spawn (the Node handoff) runs normally.
+   */
+  const failFirstSpawn = [
+    'import childProcess from "node:child_process";',
+    'import { syncBuiltinESMExports } from "node:module";',
+    "const realSpawn = childProcess.spawn;",
+    "let failed = false;",
+    "childProcess.spawn = function (cmd, args, opts) {",
+    "  if (failed) return realSpawn.call(this, cmd, args, opts);",
+    "  failed = true;",
+    '  return realSpawn.call(this, cmd + ".does-not-exist", args, opts);',
+    "};",
+    "syncBuiltinESMExports();",
+  ].join("\n");
+
+  it("still falls back when the chosen oam fails to spawn on an oam host", { skip, timeout }, async () => {
+    const run = await runLauncher("0.9.0", isolated({ OAM_BIN: process.execPath }), failFirstSpawn);
+    assert.equal(run.code, 0, JSON.stringify(run));
+    assert.equal(run.stdout.trim(), PACKAGE_VERSION, "the Node fallback must still serve");
+    assert.match(run.stderr, /failed to launch oam at .*using Node instead/);
+    // A failed launch is not "no newer oam was found": one was found.
+    assert.match(
+      run.stderr,
+      /this process is oam 0\.9\.0, older than 0\.15\.2, and the oam chosen to replace it failed/,
+    );
+    assert.doesNotMatch(run.stderr, /no newer oam was found/);
+    assert.match(run.stderr, /LAUNCHER_ARGV1=.*npmjs-mcp\.mjs/);
+  });
+
+  it("keeps serving on a supported oam host when the sandboxed oam fails to spawn", { skip, timeout }, async () => {
+    // The same failure on the path only this server has: a supported oam host
+    // reaches discovery because NPMJS_MCP_SANDBOX=1 needs a fresh oam, and the
+    // documented `auto` fallback is to serve unsandboxed in THIS process. The
+    // dead child's 'close' lands within milliseconds of its 'error'; the hold
+    // gives it far longer than that to kill a session that is already serving.
+    const run = await serveLauncher(
+      "0.15.2",
+      isolated({ NPMJS_MCP_SANDBOX: "1", OAM_BIN: process.execPath }),
+      failFirstSpawn,
+      1_500,
+    );
+    assert.equal(run.answered, true, `initialize must be answered: ${JSON.stringify(run)}`);
+    assert.equal(run.exitedBeforeStdinEnd, false, `the launcher must outlive the dead child: ${JSON.stringify(run)}`);
+    assert.equal(run.code, 0, JSON.stringify(run));
+    assert.match(
+      run.stderr,
+      /^npmjs-mcp: failed to launch oam at .*; NPMJS_MCP_SANDBOX=1 is not applied .*; serving on this oam 0\.15\.2 process instead\.$/m,
+    );
+    assert.match(run.stderr, /LAUNCHER_ARGV1=.*dist[\\/]index\.js/);
   });
 });

@@ -99,12 +99,15 @@ That's it. Now ask your AI assistant:
 |---|---|---|
 | `NPM_TOKEN` | (none) | npm access token. Required only for write/auth/org/access/hooks tools. A Granular Access Token is strongly preferred over a Classic Automation token. |
 | `NPM_REGISTRY` | `https://registry.npmjs.org` | Alternate registry (enterprise/private). Must support the npm HTTP API shape. |
-| `NPMJS_MCP_RUNTIME` | `auto` | `auto` prefers [oam](https://oamjs.org) and falls back to Node; `oam` requires it and fails loudly if absent; `node` never uses it. |
-| `OAM_BIN` | (none) | Explicit path to an `oam` binary, checked before PATH and the installer locations. |
+| `NPMJS_MCP_RUNTIME` | `auto` | `auto`: serve on the [oam](https://oamjs.org) the launcher is already running under if that is 0.15.2 or newer; otherwise run on the newest oam binary it can find at 0.15.2 or newer (see `OAM_BIN`); otherwise on Node. An oam host older than 0.15.2 never serves the server itself — it hands off to the newest usable oam, or to Node on `PATH`, or exits with an error when there is neither. An unusable `OAM_BIN` is always named on stderr; the other oam binaries found are named, with the reason, only when none of them is usable — an older copy losing to a newer one says nothing. `oam`: the same, but exit with an error instead of falling back to Node. `node`: always Node — in-process under `npx`, and handed off to Node on `PATH` when a client launches the command with `oam run`. Case-insensitive; any other value behaves like `auto`. |
+| `NPMJS_MCP_SANDBOX` | (none) | `1` runs the server in a freshly spawned oam (0.15.2+) under `--permission`, granting only the npm registry hosts (plus `NPM_REGISTRY`'s host) and the variables the server reads; filesystem and subprocess access stay denied. Forces a spawn even when already running on oam. Under `auto`, when no usable oam is found, or the one found fails to launch, the server runs without the sandbox and says so on stderr; pair it with `NPMJS_MCP_RUNTIME=oam` to make that fatal. Ignored under `NPMJS_MCP_RUNTIME=node`. |
+| `OAM_BIN` | (none) | Path to an `oam` binary to use in preference to discovery, when it is 0.15.2 or newer. If it does not exist, is older, or will not run, the launcher says so on stderr and carries on with discovery. Discovery looks in the installed location (`%LOCALAPPDATA%\oam\bin` then `~/.oam/bin` on Windows, `~/.oam/bin` elsewhere) and on `PATH`, asks every oam it finds for its version, and uses the newest; on a tie the installed copy wins. On Windows only `oam.exe` counts; an `oam.cmd` / `oam.bat` shim is never run, and is named on stderr when no usable oam is found. Ignored under `NPMJS_MCP_RUNTIME=node`, and when already running on oam 0.15.2+ without the sandbox. |
 
 ### Runtime
 
 The server ships a launcher that prefers the [oam](https://oamjs.org) runtime and falls back to Node. The server itself is a pre-bundled ESM file using only `node:` builtins, so **both paths behave identically** — verified against the full MCP surface (handshake, all 64 tools, live registry calls) on each.
+
+**oam 0.15.2, the latest release, is the minimum.** The launcher asks every oam binary it can find for its version and runs the newest one at or above it, never serves on an older oam, and falls back to Node when there is none (`NPMJS_MCP_RUNTIME=oam` turns that into a hard error). See [Configuration](#configuration) for the details.
 
 Falling back costs nothing: npm has already started Node to run the launcher, so the fallback is an in-process `import()` — no extra spawn, no extra startup.
 
@@ -126,7 +129,7 @@ npm `bin` entries are Node scripts, so reaching oam through one costs Node's sta
 
 Benchmarking note: measure an **installed** oam (`~/.oam/bin`), never one out of a cargo `target/` directory — a concurrent `cargo build` replaces the binary mid-run, and fresh bytes are cold where the `node.exe` you are comparing against is warm. oam is pre-alpha; re-measure on your own hardware.
 
-oam's `--permission` sandbox is deliberately **not** used: it denies network access and implements no grant to restore it, which would leave every registry call failing.
+oam's `--permission` sandbox is **opt-in** via `NPMJS_MCP_SANDBOX=1`. It is not the default because a wrong grant list fails quietly rather than loudly: a missing host can return a half-populated answer with no error, and a missing variable reads as unset rather than denied.
 
 **Alternate MCP clients:**
 

@@ -5,6 +5,19 @@ All notable changes to `@yawlabs/npmjs-mcp` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **The launcher always uses the newest oam, and the minimum is now the latest release, 0.15.2.** It used to take the FIRST oam binary it found and only then check its version, so a stale copy in an earlier location hid a current one: with oam 0.9.0 in `~/.oam/bin` and 0.15.2 on `PATH`, it ran 0.9.0. Every oam binary it can see is now asked for its version, and the newest at or above 0.15.2 wins; on a tie the installed copy keeps priority.
+- **An oam host older than the floor no longer serves the server itself.** When a client ran `oam run bin/npmjs-mcp.mjs` with an old oam and discovery came up empty, the server ran on that old oam. An old host now hands off to the newest usable oam, or to Node on `PATH`, or exits with an error when there is neither. Every handoff from an oam host pipes stdio instead of inheriting it: an oam older than 0.9.0 treats `stdio: 'inherit'` as `'pipe'`, so an inherited handoff never completes the MCP handshake (measured on a real oam 0.8.2 host).
+- **A bad `OAM_BIN` is reported instead of silently ignored.** A path that does not exist, an oam below the floor, or a binary that will not run is named on stderr, and discovery carries on instead of dropping straight to Node.
+- **`NPMJS_MCP_RUNTIME=node` now always means Node.** Launched under `oam run`, it hands off to Node on `PATH` rather than staying on oam. It still never applies `NPMJS_MCP_SANDBOX=1`.
+- **A requested sandbox that cannot be applied is now said out loud.** `NPMJS_MCP_SANDBOX=1` still forces a freshly spawned oam, and under `auto` still falls back without `--permission` when no usable oam is found — but that fallback now writes a note to stderr instead of dropping the sandbox silently. On an oam host at the floor the fallback serves in that process; below the floor it hands off to Node. `NPMJS_MCP_RUNTIME=oam` still makes it fatal. The `--permission` / `--allow-net` / `--allow-env` grants were re-verified with a real MCP handshake on oam 0.15.2.
+- Each `oam --version` probe is bounded at 5s, so a wedged binary on `PATH` cannot hang the launch.
+
+### Documentation
+- The README's Runtime section no longer says oam's `--permission` sandbox is "deliberately not used" — `NPMJS_MCP_SANDBOX=1` has offered it since 0.15.0 — and the configuration table now lists `NPMJS_MCP_SANDBOX` and describes the 0.15.2 floor and newest-oam selection.
+
 ## [0.15.3] -- 2026-09-12
 
 ### Fixed

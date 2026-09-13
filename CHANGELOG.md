@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Launching the bin under oam no longer boots a second, nested oam.** A host that resolves this package's `bin` and runs `oam run bin/npmjs-mcp.mjs` — Yaw MCP does, and so does oam's sidecar regression matrix — got a launcher that discovered and spawned its own oam without asking what it was already running on, so one server cost two runtime boots (measured on Windows: `oam.exe` with a nested `oam.exe` + `conhost.exe` underneath it). When `process.versions.oam` clears the same 0.9.0 floor a discovered binary has to, the server is now imported into the running process — no discovery, no `oam --version` probe, no second oam. `OAM_BIN` is a discovery input, so it is not consulted on that path. Two cases still take the discovery path: a host oam below the floor, and `NPMJS_MCP_SANDBOX=1`, because `--permission` is a process-level flag only a freshly spawned oam can apply. That second case is not a guaranteed sandbox: when discovery cannot produce a runnable oam, `NPMJS_MCP_RUNTIME=oam` exits with an error, but the default `auto` falls back to the in-process server without `--permission`, exactly as before this release. Pair `NPMJS_MCP_SANDBOX=1` with `NPMJS_MCP_RUNTIME=oam` to make an unavailable sandbox fatal.
+- The launcher's own header comment claimed a requested sandbox "still spawns" a fresh oam; it now describes the `auto` fallback above instead of overstating the guarantee.
+
+### Documentation
+- **The README no longer claims `npm_deprecate` validates message punctuation** (#45). That heuristic was removed in 0.10, but "Safety by default" still advertised it and the 422 troubleshooting entry led with "use an em-dash and no trailing period", sending users to rewrite punctuation instead of checking the real causes. It now describes the check that exists — the 1024-character message limit, enforced before sending — and the 422 entry names the actual causes, noting that a range matching no published version and an over-long message are both rejected with HTTP 400 before any write, so a real 422 from the tool points at the account's 2FA policy.
+
 ## [0.15.1] -- 2026-08-23
 
 ### Fixed

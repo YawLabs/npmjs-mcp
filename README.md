@@ -20,7 +20,7 @@ Other npm MCP servers wrap `npm search` and call it done. This one doesn't.
 - **Full registry HTTP surface** — 64 tools across reads, writes, orgs, teams, hooks, provenance, trusted publishers, and ops health. Not just `npm view`.
 - **Write ops that actually work in agents** — `npm_deprecate`, `npm_dist_tag_set`, `npm_owner_add`, `npm_unpublish_version` go directly to the HTTP API with your token. No 2FA prompts, no `--otp` hunts, no `ENEEDAUTH` from a session-bound `.npmrc`.
 - **Agent-aware failure surfacing** — write tools detect non-interactive context and return specific human-runnable commands (`npm login --auth-type=web`) instead of looping on unrecoverable errors.
-- **Safety by default** — `npm_unpublish_*` requires `confirm: true`. `npm_owner_remove` blocks you from locking yourself out. `npm_deprecate` validates the message format (em-dash, no trailing period) that npmjs.com's API actually accepts.
+- **Safety by default** — `npm_unpublish_*` requires `confirm: true`. `npm_owner_remove` blocks you from locking yourself out. `npm_deprecate` rejects a message over the registry's 1024-character limit before sending it.
 - **Ops playbook built in** — `npm_ops_playbook` returns the canonical tool-vs-CLI-vs-CI decision matrix so your agent picks the right path on the first try.
 - **Tool annotations** — every tool declares `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`, so MCP clients can skip confirmation on safe ops.
 - **No API key required for reads** — search, packages, downloads, security, dep tree, licenses all work anonymously. Auth is opt-in via `NPM_TOKEN`.
@@ -303,8 +303,9 @@ name-to-versions map directly: `npm_audit({ packages: { lodash: ["4.17.20"] } })
 
 **"HTTP 422 Unprocessable" on deprecate**
 
-- Common cause: message format. Use an em-dash and no trailing period: `"Renamed to @x/y — install that instead"`, not `"Renamed to @x/y. Install that instead."`
-- Another: specifying a `versions` range that doesn't match any published version. Call `npm_versions` to confirm.
+- The 422 message lists three common causes. `npm_deprecate` checks the first two before it writes anything: a `versionRange` that matches no published version, and a message over 1024 characters. Both come back as HTTP 400 with the reason, not a 422. The range error lists the published versions, so correct the range from that list or with `npm_versions`.
+- That leaves the third cause for a 422 from `npm_deprecate`: an account-level 2FA policy that requires an interactive CLI session. The error message names the fallback: `npm login --auth-type=web`, followed by the equivalent npm CLI command (here, `npm deprecate`).
+- Message punctuation is not a cause. Swapping a trailing period for an em-dash will not clear a 422.
 
 **Windows: MCP server doesn't start**
 

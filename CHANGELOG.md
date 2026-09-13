@@ -5,7 +5,7 @@ All notable changes to `@yawlabs/npmjs-mcp` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.15.3] -- 2026-09-12
 
 ### Fixed
 - **Launching the bin under oam no longer boots a second, nested oam.** A host that resolves this package's `bin` and runs `oam run bin/npmjs-mcp.mjs` — Yaw MCP does, and so does oam's sidecar regression matrix — got a launcher that discovered and spawned its own oam without asking what it was already running on, so one server cost two runtime boots (measured on Windows: `oam.exe` with a nested `oam.exe` + `conhost.exe` underneath it). When `process.versions.oam` clears the same 0.9.0 floor a discovered binary has to, the server is now imported into the running process — no discovery, no `oam --version` probe, no second oam. `OAM_BIN` is a discovery input, so it is not consulted on that path. Two cases still take the discovery path: a host oam below the floor, and `NPMJS_MCP_SANDBOX=1`, because `--permission` is a process-level flag only a freshly spawned oam can apply. That second case is not a guaranteed sandbox: when discovery cannot produce a runnable oam, `NPMJS_MCP_RUNTIME=oam` exits with an error, but the default `auto` falls back to the in-process server without `--permission`, exactly as before this release. Pair `NPMJS_MCP_SANDBOX=1` with `NPMJS_MCP_RUNTIME=oam` to make an unavailable sandbox fatal.

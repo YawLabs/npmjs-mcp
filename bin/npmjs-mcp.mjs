@@ -61,12 +61,20 @@
  * no `oam --version` probe, no second oam. OAM_BIN is a discovery input, so it
  * is not consulted on that path: the host has already chosen which oam runs.
  *
- * Two cases still spawn, deliberately. NPMJS_MCP_SANDBOX=1, because
- * `--permission` is a process-level flag that only a FRESH oam can apply --
- * serving in-process there would drop the sandbox without a word, a security
- * downgrade dressed up as an optimisation, in a process that may be holding an
- * NPM_TOKEN. And a host oam below the floor, which takes the discovery path
- * exactly as it always did.
+ * Two cases still take the discovery path, deliberately. NPMJS_MCP_SANDBOX=1,
+ * because `--permission` is a process-level flag that only a FRESH oam can
+ * apply -- taking the in-process shortcut there would drop the sandbox without
+ * a word, a security downgrade dressed up as an optimisation, in a process that
+ * may be holding an NPM_TOKEN. And a host oam below the floor, which takes the
+ * discovery path exactly as it always did.
+ *
+ * The discovery path is not a guaranteed spawn. A sandboxed oam is spawned only
+ * when discovery finds a runnable oam at or above the floor. When it does not --
+ * no oam found, one too old or unrunnable, or a spawn that fails to launch --
+ * NPMJS_MCP_RUNTIME=oam exits with an error, but the default `auto` falls back
+ * to the in-process server WITHOUT `--permission`. So under `auto` a requested
+ * sandbox is best-effort, not enforced; pair NPMJS_MCP_SANDBOX=1 with
+ * NPMJS_MCP_RUNTIME=oam to make an unavailable sandbox fatal instead.
  *
  * THE `--permission` SANDBOX (oam 0.9.0+, opt-in)
  * This used to be a "deliberately not done" note: oam's `--permission` denied
@@ -223,7 +231,8 @@ function atLeast(v, min) {
  * `hostOam` is `process.versions.oam`: oam's own key, absent on Node, so on
  * Node every mode but `node` is the discovery path it always was. `sandbox`
  * is whether a spawn would carry flags only a fresh oam can apply; see ALREADY
- * RUNNING ON OAM above for why that alone forces the spawn. The floor is
+ * RUNNING ON OAM above for why that alone forces the discovery path, and for
+ * why that path can still end in-process without the sandbox. The floor is
  * OAM_MIN itself, not a parameter, so a host oam and a discovered one can never
  * be held to different minimums.
  *

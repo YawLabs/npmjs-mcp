@@ -187,7 +187,12 @@ type LauncherRun = { stdout: string; stderr: string; code: number | null };
  * Env is a whitelist so an NPMJS_MCP_* var exported by the developer's shell
  * cannot change what is being asserted.
  */
-function runLauncher(hostOam: string | undefined, extraEnv: Record<string, string> = {}): Promise<LauncherRun> {
+function launcherCommand(
+  hostOam: string | undefined,
+  extraEnv: Record<string, string>,
+  extraPreload: string,
+  args: string[],
+): { argv: string[]; env: Record<string, string> } {
   // Every run also reports, at exit, what the LAUNCHER process's argv[1] ended
   // up as. runInProcess points it at dist/index.js; a handoff leaves it on the
   // launcher. That is the only way to tell "served in-process" from "handed
@@ -197,12 +202,21 @@ function runLauncher(hostOam: string | undefined, extraEnv: Record<string, strin
     hostOam === undefined
       ? ""
       : `Object.defineProperty(process.versions, "oam", { value: ${JSON.stringify(hostOam)}, enumerable: true });`;
-  const preload = ["--import", `data:text/javascript,${encodeURIComponent(`${exitMarker}${posing}`)}`];
+  const preload = ["--import", `data:text/javascript,${encodeURIComponent(`${exitMarker}${posing}${extraPreload}`)}`];
+  return {
+    argv: [...preload, LAUNCHER, ...args],
+    env: { PATH: process.env.PATH ?? "", OAM_BIN: process.execPath, ...extraEnv },
+  };
+}
+
+function runLauncher(
+  hostOam: string | undefined,
+  extraEnv: Record<string, string> = {},
+  extraPreload = "",
+): Promise<LauncherRun> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(process.execPath, [...preload, LAUNCHER, "--version"], {
-      env: { PATH: process.env.PATH ?? "", OAM_BIN: process.execPath, ...extraEnv },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const { argv, env } = launcherCommand(hostOam, extraEnv, extraPreload, ["--version"]);
+    const child = spawn(process.execPath, argv, { env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
@@ -216,6 +230,63 @@ function runLauncher(hostOam: string | undefined, extraEnv: Record<string, strin
     child.on("error", reject);
     // `close` rather than `exit`, so both pipes have drained before asserting.
     child.on("close", (code) => resolvePromise({ stdout, stderr, code }));
+  });
+}
+
+type ServedRun = LauncherRun & { answered: boolean; exitedBeforeStdinEnd: boolean };
+
+/**
+ * Run the REAL bin the way a host does -- no `--version`, stdin held open, one
+ * MCP `initialize` sent at once -- then, `holdMs` after the answer, end stdin
+ * and wait for the launcher to exit.
+ *
+ * runLauncher cannot show a launcher that dies AFTER an in-process server has
+ * started: the server handles `--version` during its own module evaluation and
+ * exits before anything else queued on the event loop runs. A session held open
+ * can.
+ */
+function serveLauncher(
+  hostOam: string | undefined,
+  extraEnv: Record<string, string>,
+  extraPreload: string,
+  holdMs: number,
+): Promise<ServedRun> {
+  return new Promise((resolvePromise, reject) => {
+    const { argv, env } = launcherCommand(hostOam, extraEnv, extraPreload, []);
+    const child = spawn(process.execPath, argv, { env, stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let answered = false;
+    let stdinEnded = false;
+    // Never leave a server behind when it neither answers nor exits.
+    const deadline = setTimeout(() => child.kill(), 30_000);
+    const initialize = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "launcher-test", version: "0" } },
+    };
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+      if (answered || !/"id":1[,}]/.test(stdout)) return;
+      answered = true;
+      setTimeout(() => {
+        stdinEnded = true;
+        child.stdin.end();
+      }, holdMs);
+    });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.stdin.on("error", () => {});
+    child.on("error", reject);
+    child.on("close", (code) => {
+      clearTimeout(deadline);
+      resolvePromise({ stdout, stderr, code, answered, exitedBeforeStdinEnd: !stdinEnded });
+    });
+    child.stdin.write(`${JSON.stringify(initialize)}\n`);
   });
 }
 
@@ -346,5 +417,62 @@ describe("launcher with no usable oam", () => {
     assert.equal(run.code, 1, JSON.stringify(run));
     assert.equal(run.stdout.trim(), "", "nothing may be served");
     assert.match(run.stderr, /^npmjs-mcp: NPMJS_MCP_RUNTIME=oam but no usable oam \(0\.15\.2 or newer\) was found\.$/m);
+  });
+
+  /**
+   * The chosen binary passed its --version probe and then could not be spawned
+   * (deleted or replaced in between). A failed spawn emits 'error' and then
+   * 'close' with the negative errno, and on an oam host the launcher waits for
+   * 'close' -- so an unguarded close handler exited the launcher mid-fallback
+   * and nothing served. This preload makes the FIRST spawn target a path that
+   * does not exist; any later spawn (the Node handoff) runs normally.
+   */
+  const failFirstSpawn = [
+    'import childProcess from "node:child_process";',
+    'import { syncBuiltinESMExports } from "node:module";',
+    "const realSpawn = childProcess.spawn;",
+    "let failed = false;",
+    "childProcess.spawn = function (cmd, args, opts) {",
+    "  if (failed) return realSpawn.call(this, cmd, args, opts);",
+    "  failed = true;",
+    '  return realSpawn.call(this, cmd + ".does-not-exist", args, opts);',
+    "};",
+    "syncBuiltinESMExports();",
+  ].join("\n");
+
+  it("still falls back when the chosen oam fails to spawn on an oam host", { skip, timeout }, async () => {
+    const run = await runLauncher("0.9.0", isolated({ OAM_BIN: process.execPath }), failFirstSpawn);
+    assert.equal(run.code, 0, JSON.stringify(run));
+    assert.equal(run.stdout.trim(), PACKAGE_VERSION, "the Node fallback must still serve");
+    assert.match(run.stderr, /failed to launch oam at .*using Node instead/);
+    // A failed launch is not "no newer oam was found": one was found.
+    assert.match(
+      run.stderr,
+      /this process is oam 0\.9\.0, older than 0\.15\.2, and the oam chosen to replace it failed/,
+    );
+    assert.doesNotMatch(run.stderr, /no newer oam was found/);
+    assert.match(run.stderr, /LAUNCHER_ARGV1=.*npmjs-mcp\.mjs/);
+  });
+
+  it("keeps serving on a supported oam host when the sandboxed oam fails to spawn", { skip, timeout }, async () => {
+    // The same failure on the path only this server has: a supported oam host
+    // reaches discovery because NPMJS_MCP_SANDBOX=1 needs a fresh oam, and the
+    // documented `auto` fallback is to serve unsandboxed in THIS process. The
+    // dead child's 'close' lands within milliseconds of its 'error'; the hold
+    // gives it far longer than that to kill a session that is already serving.
+    const run = await serveLauncher(
+      "0.15.2",
+      isolated({ NPMJS_MCP_SANDBOX: "1", OAM_BIN: process.execPath }),
+      failFirstSpawn,
+      1_500,
+    );
+    assert.equal(run.answered, true, `initialize must be answered: ${JSON.stringify(run)}`);
+    assert.equal(run.exitedBeforeStdinEnd, false, `the launcher must outlive the dead child: ${JSON.stringify(run)}`);
+    assert.equal(run.code, 0, JSON.stringify(run));
+    assert.match(
+      run.stderr,
+      /^npmjs-mcp: failed to launch oam at .*; NPMJS_MCP_SANDBOX=1 is not applied .*; serving on this oam 0\.15\.2 process instead\.$/m,
+    );
+    assert.match(run.stderr, /LAUNCHER_ARGV1=.*dist[\\/]index\.js/);
   });
 });

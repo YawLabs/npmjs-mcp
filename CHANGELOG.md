@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`npm_check_auth` and `npm_publish_preflight` no longer tell you to set up an "automation token" or to run `npm login`.** Classic tokens, Automation tokens included, were revoked on 2025-12-09, and `npm login` replaces whatever token is in `~/.npmrc` with a 2FA-bound web session, so the next headless publish fails on an OTP challenge. Every publish hand-off now names a Granular Access Token with 2FA bypass, says so in its label, and notes that npm is targeting January 2027 to remove direct publish from bypass tokens too, so trusted publishing (OIDC) is the long-term path. The one-time `npm publish --access public --auth-type=web` hand-off is unchanged: it authenticates that single publish in a browser without writing a token.
+- `release.sh` strips the CRLF that `jq` emits on Windows when it syncs `server.json`, so the bump commit no longer trips git's "CRLF will be replaced by LF" warning on every release.
+
+### Changed
+- Dev dependencies: `@modelcontextprotocol/sdk` 1.29.0 -> 1.30.0, `zod` 4.4.3 -> 4.6.5, `esbuild` 0.28.1 -> 0.28.2, `@types/node` 26.1.1 -> 26.5.1, `@biomejs/biome` 2.5.4 -> 2.5.13 (with `biome.json`'s `$schema` synced). `npm audit` is clean again: the SDK's transitive `fast-uri`, `hono`, `@hono/node-server`, `ip-address` and `qs` all moved past advisories. Of those only `fast-uri` (via `ajv`) is bundled into the published server; it goes from 3.1.2, inside the advised range, to 3.1.7.
+
 ## [0.16.2] -- 2026-09-14
 
 ### Fixed

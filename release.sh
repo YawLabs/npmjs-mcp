@@ -358,7 +358,10 @@ fi
 if [ -f server.json ]; then
   CURRENT_SERVER_VERSION=$(jq -r '.version' server.json 2>/dev/null || echo "")
   if [ "$CURRENT_SERVER_VERSION" != "$VERSION" ]; then
-    jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json > server.tmp
+    # jq on Windows emits CRLF. The committed file is LF (.gitattributes), so
+    # without the strip every release leaves a CRLF working copy and git warns
+    # "CRLF will be replaced by LF" on the bump commit.
+    jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json | tr -d '\r' > server.tmp
     mv server.tmp server.json
     info "server.json synced to $VERSION"
   fi

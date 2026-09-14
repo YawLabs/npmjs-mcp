@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - npm and MCP Registry listing metadata: bugs URL, core keywords, and server.json title/repository/websiteUrl.
 - `release.sh` writes a `## [x.y.z]` changelog entry for every release -- promoting `[Unreleased]` when it has content, otherwise generating one from the commit subjects since the previous tag -- keeps the Keep-a-Changelog link references current, and takes the GitHub release notes from that entry, falling back to `git log` subjects only when the repo has no changelog at all. Before this, a release with nothing under `[Unreleased]` got no entry and a release page of raw commit subjects (0.16.0 below is backfilled and its release notes rewritten); the link references, which had stopped at 0.11.2, are extended through 0.16.0.
-- package.json keywords: the core discoverability terms (claude-code, cursor, ai-agents) now come before the topic-specific ones, so they survive GitHub's 20-topic cap when topics are synced from keywords.
+- package.json keywords: the core discoverability terms (claude-code, cursor, ai-agents, ai) now come before the topic-specific ones, so they survive GitHub's 20-topic cap when topics are synced from keywords.
 
 ### Documentation
 - The README's configuration table now lists every variable the server reads: `NPM_REQUEST_TIMEOUT_MS`, `NPM_RETRY_BACKOFF_MS` and `DEBUG` were implemented but undocumented (#49, closes #41). Each default and fallback rule was measured against `src/api.ts` rather than copied: a write is never re-sent after a timeout, `Retry-After` overrides a zeroed backoff, an empty backoff counts as `0`, and `DEBUG` responds only to the exact values `npmjs-mcp` or `*`.
@@ -60,7 +60,7 @@ Listing metadata, lint and release tooling, and README only; no change to the pu
 
 ### Documentation
 - README: a "Follow @TokenLimitNews on X" badge joins the top badge row (#39).
-- The 0.15.0 entry above was backfilled from its release range and verified against the shipped code; that version had gone out without one.
+- The 0.15.0 entry below was backfilled from its release range and verified against the shipped code; that version had gone out without one.
 
 ## [0.15.1] -- 2026-08-23
 

@@ -9,12 +9,12 @@
     "id": "1205272208"
   },
   "websiteUrl": "https://yaw.sh/mcp-servers/npmjs-mcp/",
-  "version": "0.16.0",
+  "version": "0.16.1",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@yawlabs/npmjs-mcp",
-      "version": "0.16.0",
+      "version": "0.16.1",
       "transport": {
         "type": "stdio"
       }

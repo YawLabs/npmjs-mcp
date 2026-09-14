@@ -1,6 +1,6 @@
 {
   "name": "@yawlabs/npmjs-mcp",
-  "version": "0.16.0",
+  "version": "0.16.1",
   "mcpName": "io.github.YawLabs/npmjs-mcp",
   "description": "npm MCP server: registry tools for package metadata, security audits, dependency trees, and write ops (deprecate, dist-tag, owner).",
   "license": "MIT",

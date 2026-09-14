@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.1] -- 2026-09-14
+
 ### Changed
 - npm and MCP Registry listing metadata: bugs URL, core keywords, and server.json title/repository/websiteUrl.
 - `release.sh` writes a `## [x.y.z]` changelog entry for every release -- promoting `[Unreleased]` when it has content, otherwise generating one from the commit subjects since the previous tag -- keeps the Keep-a-Changelog link references current, and takes the GitHub release notes from that entry, falling back to `git log` subjects only when the repo has no changelog at all. Before this, a release with nothing under `[Unreleased]` got no entry and a release page of raw commit subjects (0.16.0 below is backfilled and its release notes rewritten); the link references, which had stopped at 0.11.2, are extended through 0.16.0.
@@ -498,7 +500,8 @@ _Closes #1._
 - Initial release — 22 tools for npm registry intelligence (read-side).
 - Tool definition tests.
 
-[Unreleased]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.1...HEAD
+[0.16.1]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.15.4...v0.16.0
 [0.15.4]: https://github.com/YawLabs/npmjs-mcp/compare/v0.15.3...v0.15.4
 [0.15.3]: https://github.com/YawLabs/npmjs-mcp/compare/v0.15.2...v0.15.3

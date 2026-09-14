@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - npm and MCP Registry listing metadata: bugs URL, core keywords, and server.json title/repository/websiteUrl.
 - `release.sh` writes a `## [x.y.z]` changelog entry for every release -- promoting `[Unreleased]` when it has content, otherwise generating one from the commit subjects since the previous tag -- keeps the Keep-a-Changelog link references current, and takes the GitHub release notes from that entry, falling back to `git log` subjects only when the repo has no changelog at all. Before this, a release with nothing under `[Unreleased]` got no entry and a release page of raw commit subjects (0.16.0 below is backfilled and its release notes rewritten); the link references, which had stopped at 0.11.2, are extended through 0.16.0.
 
+### Documentation
+- The README's configuration table now lists every variable the server reads: `NPM_REQUEST_TIMEOUT_MS`, `NPM_RETRY_BACKOFF_MS` and `DEBUG` were implemented but undocumented (#49, closes #41). Each default and fallback rule was measured against `src/api.ts` rather than copied: a write is never re-sent after a timeout, `Retry-After` overrides a zeroed backoff, an empty backoff counts as `0`, and `DEBUG` responds only to the exact values `npmjs-mcp` or `*`.
+- The Runtime section's sandbox note now says what `NPMJS_MCP_SANDBOX=1` grants (the three registry hosts plus `NPM_REGISTRY`'s hostname; exactly the five variables the server reads) and denies (filesystem, subprocess), and keeps the measured reason it stays opt-in: an incomplete grant fails silently.
+
 ## [0.16.0] -- 2026-09-13
 
 Release tooling and README only; no change to the published server's behavior.

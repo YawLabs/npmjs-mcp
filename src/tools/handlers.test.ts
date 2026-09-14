@@ -2576,6 +2576,84 @@ describe("Workflow handlers", () => {
     assert.match(result.data.ifPublishFails!.permanentFix.instructions, /Granular Access Token/);
   });
 
+  it("npm_check_auth's 2FA guidance names a bypass-enabled Granular token, never a classic or automation token", async () => {
+    // Classic tokens (including Automation tokens) were revoked on 2025-12-09.
+    // "automation token" was the label on every publish hand-off until then.
+    mockFetchMulti({
+      "/-/whoami": { username: "alice" },
+      "/-/npm/v1/user": { name: "alice", tfa: { mode: "auth-and-writes", pending: false } },
+      "/-/npm/v1/tokens": {
+        total: 1,
+        objects: [{ token: "npm_***", key: "k1", readonly: false, cidr_whitelist: [], created: "", updated: "" }],
+      },
+    });
+    const tool = findTool(workflowTools, "npm_check_auth");
+    const result = (await tool.handler({})) as {
+      data: { recommendation: string; ifPublishFails: { permanentFix: { label: string; instructions: string } } };
+    };
+    const text = `${result.data.recommendation} ${JSON.stringify(result.data.ifPublishFails.permanentFix)}`;
+    assert.match(text, /2FA bypass/);
+    assert.match(text, /revoked in December 2025/);
+    assert.doesNotMatch(text, /automation token|automation\/granular|Automation token/);
+    assert.match(result.data.ifPublishFails.permanentFix.label, /^Set up a Granular Access Token with 2FA bypass/);
+  });
+
+  it("npm_check_auth with no token points at a Granular token and warns off npm login", async () => {
+    const saved = process.env.NPM_TOKEN;
+    delete process.env.NPM_TOKEN;
+    try {
+      const tool = findTool(workflowTools, "npm_check_auth");
+      const result = (await tool.handler({})) as { data: { recommendation: string } };
+      assert.match(result.data.recommendation, /Granular Access Token/);
+      assert.match(result.data.recommendation, /Do not run `npm login`/);
+      assert.doesNotMatch(result.data.recommendation, /Run "npm login"/);
+    } finally {
+      process.env.NPM_TOKEN = saved;
+    }
+  });
+
+  it("npm_publish_preflight never offers `npm login` and labels the token fix as a bypass-enabled Granular token", async () => {
+    // With no token: the only action is the token, and it warns off npm login.
+    const saved = process.env.NPM_TOKEN;
+    delete process.env.NPM_TOKEN;
+    try {
+      const tool = findTool(workflowTools, "npm_publish_preflight");
+      const result = (await tool.handler({ name: "@yawlabs/test" })) as {
+        data: { humanActions: Array<{ label: string; command?: string; context: string }> };
+      };
+      assert.equal(result.data.humanActions.length, 1);
+      assert.match(result.data.humanActions[0].label, /^Create a Granular Access Token with 2FA bypass/);
+      assert.equal(result.data.humanActions[0].command, undefined);
+      assert.match(result.data.humanActions[0].context, /scoped to @yawlabs/);
+      assert.match(result.data.humanActions[0].context, /Do not run `npm login`/);
+    } finally {
+      process.env.NPM_TOKEN = saved;
+    }
+    // With 2FA gating writes: the permanent fix is the bypass token, and the
+    // 2FA check names it rather than "automation/granular tokens".
+    mockFetchMulti({
+      "/-/whoami": { username: "alice" },
+      "/-/npm/v1/user": { name: "alice", tfa: { mode: "auth-and-writes", pending: false } },
+      "/-/npm/v1/tokens": {
+        total: 1,
+        objects: [{ token: "npm_***", key: "k1", readonly: false, cidr_whitelist: [], created: "", updated: "" }],
+      },
+    });
+    const tool = findTool(workflowTools, "npm_publish_preflight");
+    const result = (await tool.handler({ name: "@yawlabs/test" })) as {
+      data: {
+        checks: Array<{ check: string; detail: string }>;
+        humanActions: Array<{ label: string; context: string }>;
+      };
+    };
+    const all = JSON.stringify(result.data);
+    assert.doesNotMatch(all, /automation token|automation\/granular|Automation\/granular|npm login/i);
+    assert.match(all, /Granular Access Token with 2FA bypass/);
+    const fix = result.data.humanActions.find((a) => /permanent fix/.test(a.label));
+    assert.ok(fix, "the permanent-fix action is present when 2FA gates writes");
+    assert.match(fix!.context, /January 2027/);
+  });
+
   it("npm_check_auth treats 2FA mode auth-only as non-blocking for headless publish", async () => {
     // "auth-only" challenges LOGIN, not writes. Every existing auth-only fixture
     // in this suite pairs it with pending: true, which routes to the disabled

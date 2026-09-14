@@ -59,7 +59,9 @@ export const workflowTools = [
 
       if (!isAuthenticated()) {
         result.recommendation =
-          'No NPM_TOKEN configured. Run "npm login" in your terminal, or create a token at https://www.npmjs.com/settings/~/tokens';
+          "No NPM_TOKEN configured. Create a Granular Access Token (with 2FA bypass for headless publishing) at " +
+          "https://www.npmjs.com/settings/~/tokens and set NPM_TOKEN. Do not run `npm login`: it replaces any token in " +
+          "~/.npmrc with a 2FA-bound web session, so the next headless write fails.";
         return { ok: true, status: 200, data: result };
       }
 
@@ -120,11 +122,12 @@ export const workflowTools = [
           "Could not determine 2FA status -- token may lack read permission on /-/npm/v1/user. " +
           "Verify the token has at least read access and re-run npm_check_auth.";
       } else {
-        // 2FA is enabled — we can't know for certain if the current token is automation-type
-        // from the API alone (tokens are redacted). But we can give accurate guidance.
+        // 2FA is enabled — we can't know for certain whether the current token
+        // has 2FA bypass from the API alone (tokens are redacted). But we can
+        // give accurate guidance.
         result.tokenType = "unknown (tokens are redacted in API)";
         result.canPublishHeadless = null; // unknown — depends on token type
-        result.recommendation = `2FA is enabled (${result.twoFactorAuth}). Headless publishing ONLY works with automation/granular tokens. Publish tokens from ~/.npmrc ALWAYS require OTP and WILL fail in CI/agent contexts. If publish fails with EOTP, your token is a publish token — you need an automation token.`;
+        result.recommendation = `2FA is enabled (${result.twoFactorAuth}). Headless publishing needs a Granular Access Token with 2FA bypass; any other token gets an OTP challenge (EOTP) in CI/agent contexts. Classic tokens were revoked in December 2025. npm is targeting January 2027 to remove direct publish from bypass tokens as well, so trusted publishing (OIDC) is the long-term path.`;
         result.ifPublishFails = {
           errorType: "2FA_REQUIRED",
           humanAction: {
@@ -134,10 +137,10 @@ export const workflowTools = [
               "Run in an INTERACTIVE terminal — a browser will open for 2FA. Do NOT run through piped/agent runners.",
           },
           permanentFix: {
-            label: "Set up automation token (permanent fix for CI/agents)",
+            label: "Set up a Granular Access Token with 2FA bypass (permanent fix for CI/agents)",
             url: "https://www.npmjs.com/settings/~/tokens",
             instructions:
-              "Create a 'Granular Access Token' with publish permissions scoped to your org/packages. " +
+              "Create a 'Granular Access Token' with publish permissions scoped to your org/packages and 2FA bypass enabled. " +
               "Then set it as your CI secret or run: npm config set //registry.npmjs.org/:_authToken=<token>",
           },
         };
@@ -191,14 +194,11 @@ export const workflowTools = [
           detail: "No NPM_TOKEN environment variable set. Publishing requires authentication.",
         });
         actions.push({
-          label: "Login interactively",
-          command: "npm login",
-          context: "Run in your terminal to create a publish token",
-        });
-        actions.push({
-          label: "Create automation token (for CI/agents)",
+          label: "Create a Granular Access Token with 2FA bypass (for CI/agents)",
           url: "https://www.npmjs.com/settings/~/tokens",
-          context: `Create a Granular Access Token with publish permissions${scope ? ` scoped to ${scope}` : ""}, then set NPM_TOKEN in your environment`,
+          context:
+            `Create a Granular Access Token with publish permissions${scope ? ` scoped to ${scope}` : ""} and 2FA bypass enabled, then set NPM_TOKEN in your environment. ` +
+            "Do not run `npm login`: it replaces any token in ~/.npmrc with a 2FA-bound web session.",
         });
       } else {
         // Verify token works
@@ -249,7 +249,7 @@ export const workflowTools = [
                 checks.push({
                   check: "2FA status",
                   status: "info",
-                  detail: `2FA is enabled (mode: ${tfa.mode}). In this non-interactive context:\n  - Automation/granular tokens: can publish (bypass 2FA)\n  - Publish tokens (from ~/.npmrc): WILL FAIL with EOTP error\n  - --auth-type=web: IMPOSSIBLE (needs browser)\n  - OTP codes: IMPOSSIBLE (agent can't enter them)`,
+                  detail: `2FA is enabled (mode: ${tfa.mode}). In this non-interactive context:\n  - Granular Access Token with 2FA bypass: can publish\n  - Any other token (including a web-login session in ~/.npmrc): WILL FAIL with EOTP error\n  - --auth-type=web: IMPOSSIBLE (needs browser)\n  - OTP codes: IMPOSSIBLE (agent can't enter them)`,
                 });
               }
             } else {
@@ -283,7 +283,7 @@ export const workflowTools = [
                 checks.push({
                   check: "Token capability",
                   status: "warn",
-                  detail: `Found ${readWriteTokens.length} read-write token(s) out of ${totalTokens} total. Cannot determine token type from API (tokens are redacted). If publish fails with EOTP, your active token is a publish-type token — you need an automation/granular token.`,
+                  detail: `Found ${readWriteTokens.length} read-write token(s) out of ${totalTokens} total. Cannot determine token type from API (tokens are redacted). If publish fails with EOTP, your active token has no 2FA bypass — you need a Granular Access Token with 2FA bypass enabled.`,
                 });
                 canPublishHeadless = null; // unknown
               } else {
@@ -393,9 +393,11 @@ export const workflowTools = [
             "Run this in an INTERACTIVE terminal (not piped through an agent or ! runner). A browser will open for 2FA.",
         });
         actions.push({
-          label: "Set up automation token (permanent fix for CI/agents)",
+          label: "Set up a Granular Access Token with 2FA bypass (permanent fix for CI/agents)",
           url: "https://www.npmjs.com/settings/~/tokens",
-          context: `Create a 'Granular Access Token' with publish permissions${scope ? ` scoped to ${scope} packages` : ""}. This bypasses 2FA for headless publishing.`,
+          context:
+            `Create a 'Granular Access Token' with publish permissions${scope ? ` scoped to ${scope} packages` : ""} and 2FA bypass enabled. ` +
+            "npm is targeting January 2027 to remove direct publish from bypass tokens, so trusted publishing (OIDC) is the long-term path.",
         });
       }
 

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.2] -- 2026-09-14
+
 ### Fixed
 - **A 422 now describes the registry call that failed, instead of three causes that mostly could not apply.** Every 422 used to list the same three causes whatever the tool -- a semver range matching no published version, a deprecation message over 1024 characters, and an account-level 2FA policy -- even though `npm_deprecate` rejects the first two locally with HTTP 400 before it writes, and the registry never answers 2FA with 422. Each write step now passes the call it made (22 calls, one per write), and the message says what that call sent, names only the npm rules documented for it, gives the npm 11 CLI equivalent with the package filled in, and ends with the registry's raw body. The hook tools name no CLI command, because `npm hook` was removed in npm 11. This withdraws the 0.15.3 note that a real 422 from `npm_deprecate` points at the account's 2FA policy.
 - **401 and 403 now give 2FA advice that can still be followed.** They recommended classic Automation tokens, which npm revoked on 2025-12-09, and `npm login --auth-type=web`, which replaces the token in `~/.npmrc` with a 2FA-bound web session so the next headless write fails. An OTP challenge arrives as 401 and a 2FA-policy refusal as 403; the message says so and points at a Granular Access Token with 2FA bypass. For owner, access, team membership and grant, org membership and token changes -- which since 2026-07-31 need an interactive 2FA challenge even from a bypass token -- the message says no token can make the change and names the `npm` command a human runs. The same corrections reach the `npm_ops_playbook` token types, CLI fallback and publish steps, the `npm_verify_token` hint, the missing-token message and the README.
@@ -504,7 +506,8 @@ _Closes #1._
 - Initial release — 22 tools for npm registry intelligence (read-side).
 - Tool definition tests.
 
-[Unreleased]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.1...HEAD
+[Unreleased]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.2...HEAD
+[0.16.2]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.1...v0.16.2
 [0.16.1]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.15.4...v0.16.0
 [0.15.4]: https://github.com/YawLabs/npmjs-mcp/compare/v0.15.3...v0.15.4

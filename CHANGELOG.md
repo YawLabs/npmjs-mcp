@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - npm and MCP Registry listing metadata: bugs URL, core keywords, and server.json title/repository/websiteUrl.
 - `release.sh` writes a `## [x.y.z]` changelog entry for every release -- promoting `[Unreleased]` when it has content, otherwise generating one from the commit subjects since the previous tag -- keeps the Keep-a-Changelog link references current, and takes the GitHub release notes from that entry, falling back to `git log` subjects only when the repo has no changelog at all. Before this, a release with nothing under `[Unreleased]` got no entry and a release page of raw commit subjects (0.16.0 below is backfilled and its release notes rewritten); the link references, which had stopped at 0.11.2, are extended through 0.16.0.
+- package.json keywords: the core discoverability terms (claude-code, cursor, ai-agents) now come before the topic-specific ones, so they survive GitHub's 20-topic cap when topics are synced from keywords.
 
 ### Documentation
 - The README's configuration table now lists every variable the server reads: `NPM_REQUEST_TIMEOUT_MS`, `NPM_RETRY_BACKOFF_MS` and `DEBUG` were implemented but undocumented (#49, closes #41). Each default and fallback rule was measured against `src/api.ts` rather than copied: a write is never re-sent after a timeout, `Retry-After` overrides a zeroed backoff, an empty backoff counts as `0`, and `DEBUG` responds only to the exact values `npmjs-mcp` or `*`.
@@ -46,6 +47,20 @@ Release tooling and README only; no change to the published server's behavior.
 
 ### Documentation
 - **The README no longer claims `npm_deprecate` validates message punctuation** (#45). That heuristic was removed in 0.10, but "Safety by default" still advertised it and the 422 troubleshooting entry led with "use an em-dash and no trailing period", sending users to rewrite punctuation instead of checking the real causes. It now describes the check that exists — the 1024-character message limit, enforced before sending — and the 422 entry names the actual causes, noting that a range matching no published version and an over-long message are both rejected with HTTP 400 before any write, so a real 422 from the tool points at the account's 2FA policy.
+
+## [0.15.2] -- 2026-09-11
+
+Listing metadata, lint and release tooling, and README only; no change to the published server's behavior. The `src/` hunks in this release are biome's safe fixes (#38) -- line wrapping, one import reorder in `api.test.ts`, and two redundant backtick escapes dropped from double-quoted strings that evaluate to the same value -- landed because no lint gate had run on `main` since the CI workflows were removed and `release.sh` let a crashed linter through.
+
+### Changed
+- **The npm listing describes what people search for** (#43). The `description` now leads with "npm MCP server" and names the tool families (package metadata, security audits, dependency trees, and the deprecate / dist-tag / owner write ops); the keywords grew from 10 to 20 terms, adding `npm-registry`, `mcp-server`, `agent`, `claude`, `claude-code`, `claude-desktop`, `cursor`, `windsurf`, `vscode` and `provenance`; and `homepage` points at the per-server page, https://yaw.sh/mcp-servers/npmjs-mcp/. Every claim in the description is README-backed, and release-volatile tool counts were left out on purpose.
+- **`npm run lint` is a trustworthy gate on Windows ARM64** (#42). `lint` and `lint:fix` now route through `scripts/lint.mjs`, a passthrough everywhere except a host whose native biome binary cannot run -- some `@biomejs/cli-win32-arm64` releases crash instead of checking (measured: 2.5.4 exits 139 on every check-shaped run while 2.4.16 and 2.5.13 run correctly), so there it provisions the x64 build **of the same version** into `node_modules/.cache` and runs that under emulation. The exit code is biome's own. The version comes from `package-lock.json` (falling back to the installed package, and failing loudly when neither exists), not from `biome.json`'s `$schema`, which pins what the *config* validates against rather than what the repo installs -- an earlier draft read `$schema` and linted with 2.4.12 while the lockfile installed 2.5.4. `YAWLABS_BIOME_BIN` and `YAWLABS_BIOME_NATIVE` override the resolver.
+- **`release.sh` stops on a crashed linter instead of publishing unlinted.** Step 1 used to treat exit 139 / 3221225477 as "Lint is UNVERIFIED" and let the release continue, on the stated grounds that CI would catch a regression -- but this repo has no CI (its workflows were removed in b2c256c and Actions is disabled), so nothing downstream ever did. A crash now fails the release and points at `SKIP_LINT=1` as the explicit last resort. The lint comments no longer blame npm's run-script wrapper (a plain node script through the same wrapper exits 0) or describe the crash as a permanent property of the architecture.
+- **`release.sh` promotes `[Unreleased]` into the release's own changelog entry.** Ported from ctxlint: before the bump commit it renames the first `## [Unreleased]` heading to `## [<version>] <dash> <date>` when that section has content, stages `CHANGELOG.md` in the bump commit, and a backstop fails the release when the version has no entry while `[Unreleased]` still has content -- the exact signature of tagging without promoting, which is how seven entries across this fleet came to be backfilled. The dash is detected from the headings already in the file rather than hardcoded, so a promoted heading matches its neighbours. With nothing under `[Unreleased]` it warns and the release notes fall back to commit subjects, which is why this entry itself is backfilled.
+
+### Documentation
+- README: a "Follow @TokenLimitNews on X" badge joins the top badge row (#39).
+- The 0.15.0 entry above was backfilled from its release range and verified against the shipped code; that version had gone out without one.
 
 ## [0.15.1] -- 2026-08-23
 
@@ -189,6 +204,38 @@ Hardening pass over the tool surface from a full-pass review: input validation o
 - `search.npm_search` rejects empty/whitespace-only queries with a 400 before the registry round-trip. The registry returns `total: 0` on `text=` which silently masks caller bugs like `query: ""`. Error string names the expected input shape.
 - `tsconfig.json` module + moduleResolution flipped from `Node16` to `NodeNext`. Forward-compat with the ESM-first posture already declared in `package.json` (`type: "module"`, `.js` extensions on imports). Build, typecheck, and full test suite (736/736) all pass under NodeNext.
 
+## [0.11.15] -- 2026-06-02
+
+Release tooling, README and tests only; no change to the published server's behavior.
+
+### Fixed
+- **`release.sh` refuses to push when origin already holds the release tag at a different commit.** `git push --follow-tags` does not reject a tag that already exists on the remote -- it silently skips it -- so the branch push would report success, origin's tag would stay at the old SHA, and the `gh release create` step would then publish a GitHub release linked to that stale commit while npm carried the new one (a rewound tag, or a parallel release racing this one). The guard queries `git ls-remote` for the tag and compares SHAs before pushing. Its first cut compared the peeled commit (`v<version>^{}`) against the tag *object* SHA that `ls-remote` reports for an annotated tag, which never match, so every resumed run against an already-pushed tag false-aborted; it now compares tag-object SHAs on both sides.
+
+### Documentation
+- The README's "Add to Yaw MCP" badge links to `https://yaw.sh/mcp/install`, which forwards the verbatim query to the `yaw://install` handler. GitHub's Markdown sanitizer strips `href` values whose scheme is not on its allowlist, so the `yaw://` link introduced in 0.11.14 rendered the image and dropped the link -- the click did nothing.
+- The tag-drift comment in `release.sh` describes the real failure mode: the tag push runs *before* `npm publish`, and the hazard is a stale GitHub release, not a non-fast-forward rejection after the publish.
+
+### Tests
+- Seven new write-op cases in `writes.test.ts` (65 -> 72), pinning paths the write suite had not covered: `npm_deprecate` returns a 401 with token-setup guidance when `NPM_TOKEN` is unset, without touching the network; `npm_deprecate`, `npm_unpublish_package` and `npm_owner_add` return a 500 from the missing-`_rev` guard rather than reaching the write step; a 422 from `npm_deprecate`'s PUT and a 403 from `npm_unpublish_package`'s DELETE are translated (not only the preceding GET); and `npm_owner_add` translates a 404 from the `/-/user` resolve step for a nonexistent user before fetching the packument.
+
+## [0.11.14] -- 2026-05-28
+
+Release tooling and README only; no change to the published server's behavior.
+
+### Changed
+- **Publishing to the Official MCP Registry moved out of GitHub Actions and into `release.sh`**, as a new step 7 between the GitHub release and Verify. The step downloads `mcp-publisher` into `~/.local/bin` when it is missing (Linux, macOS and Git Bash on Windows), logs in with `MCP_REGISTRY_TOKEN` -- falling back to `gh auth token`, whose session carries the `read:org` claim the `io.github.YawLabs/*` namespace requires, so a working `gh` login needs no extra variable -- and publishes `server.json`. Downstream catalogs source from that registry, so this is what makes a new version visible to them.
+- **`server.json`'s two version fields are synced to `package.json` on every run, not only when the bump happens.** The sync lived inside the bump's `else` branch, so a resumed run whose bump had already landed skipped it and `mcp-publisher` then tried to publish the previous version and got 400 "cannot publish duplicate version". The bump commit now stages `server.json` too, so it is never left dirty after a release. The file itself was brought forward to the current version in this release; earlier releases predated the sync and had let it drift.
+- The post-publish smoke test moved from the deleted workflow into the Verify step (now step 8): `npx -y @yawlabs/npmjs-mcp@<version> --version` from a temp directory, retried 30 x 10s, warn-only.
+- `release.sh` proceeds without the "Continue?" prompt when stdin is not a TTY, printing an info line instead. `read -p` under `set -euo pipefail` aborted every headless invocation, which had needed an `echo y |` workaround.
+- `SKIP_LINT=1` turns every `npm run lint*` / `pnpm run lint*` into a no-op, as an escape hatch for a host whose lint runner is broken.
+
+### Removed
+- `.github/workflows/ci.yml`, `deprecate.yml` and `release.yml`. GitHub Actions is no longer in the release path; a release runs end to end from the workstation.
+
+### Documentation
+- README install snippets pin `@yawlabs/npmjs-mcp@latest`, so `npx` re-resolves against the registry on every spawn and each MCP session runs the newest published version instead of whatever is in the npx metadata cache.
+- The mcp.hosting install badge is now "Add to Yaw MCP": a `yaw://install?...` deep link into Yaw Terminal's local protocol handler, which shows the command, args, env keys and source for confirmation before appending the server to `~/.yaw-mcp/config.json`. The accompanying sentence describes the local-install flow.
+
 ## [0.11.13] -- 2026-05-22
 
 ### Fixed
@@ -251,6 +298,20 @@ Hardening pass over the tool surface from a full-pass review: input validation o
 - `npm_deprecate` `versionRange` description warns that bare integers are x-ranges (e.g. `'0'` means `'0.x.x'`, not exact version 0). `'=1.2.3'` shown as the exact-version form.
 - `compileRange` carries an inline note on the first-match prerelease-anchor heuristic and the range shapes that would require a fuller comparator parser.
 
+## [0.11.7] -- 2026-05-15
+
+Release workflow, registry metadata and README only; no change to the published server's behavior.
+
+### Added
+- **Every release is published to the Official MCP Registry.** A new `server.json` names the server `io.github.YawLabs/npmjs-mcp` with the npm package as its one stdio-transport package, `package.json` gains the matching `mcpName`, and `release.yml` gains four steps after the smoke test: install `mcp-publisher`, sync `server.json`'s version fields to the pushed tag, authenticate with GitHub OIDC, and publish. The `id-token: write` permission already granted for npm provenance covers the registry auth, so no `MCP_*` secret is involved.
+- **`deprecate.yml`: `npm deprecate` runs in CI with the org `NPM_TOKEN`**, so deprecating a range no longer depends on a local WebAuthn session in `~/.npmrc`. It is `workflow_dispatch` with two inputs, the semver range and the message, passed to npm through env vars rather than interpolated into the script so an input cannot escape the argv. It shares `release.yml`'s `release-npm` concurrency group so a deprecate cannot collide with a publish, and its verify step retries `npm view` for up to ~3 minutes, because the public registry CDN can lag a deprecate write by 10-30s and the first run had printed every version as still active after the change had landed.
+
+### Changed
+- The release smoke test retries the actual `npx -y @yawlabs/npmjs-mcp@<version> --version` call (30 x 10s, a ~5 minute ceiling, typically under 30s) instead of gating on `npm view` and then running `npx` once. The two hit different CDN paths, so `npm view` could clear while `npx` still failed with `ETARGET` on a stale mirror. Mirrors aws-mcp and tailscale-mcp.
+
+### Documentation
+- The README's "Add to mcp.hosting" install link drops its `env=NPM_TOKEN` parameter, which the `/install` parser rejects as sensitive; the link now works as written.
+
 ## [0.11.6] — 2026-05-13
 
 ### Documentation
@@ -285,6 +346,21 @@ No code changes. Doc-only release so the npm page reflects the corrected README.
 
 ### Other
 - `@biomejs/biome` 2.4.12 → 2.4.14 and `zod` patched via Dependabot.
+
+## [0.11.3] — 2026-05-06
+
+### Fixed
+- `npm_user_packages` validates the username before building the request, so a malformed one returns an actionable 400 instead of an opaque registry 404. It was the last handler interpolating a username with a bare `encodeURIComponent`; it now goes through `validateUsername` and the validating `encUser` encoder like the rest.
+- `release.sh` creates annotated tags (`git tag -a`) and pushes with `--follow-tags`. `--follow-tags` silently ignores lightweight tags, so the release commit would have landed on origin with the tag never pushed and no CI release ever fired; `--follow-tags` also replaces `--tags`, which pushed every local tag, stray experimental ones included. Caught by review before any release was affected.
+- `release.sh`'s already-published check queries `@yawlabs/npmjs-mcp@<version>` rather than the package's `latest` dist-tag, which answered with whichever version was newest on the registry -- an out-of-band higher version would have made the script try to re-publish the current one and fail with "cannot publish over previously published version".
+- `release.sh` resolves the previous tag with `git describe --tags --abbrev=0 v<version>^` instead of grepping the sorted tag list, which returned a misleading neighbour when the current tag was missing; a missing tag now fails closed to "Initial release".
+- `release.yml`'s `concurrency` group is keyed on the workflow name. The first cut keyed it on `github.ref`, which is `refs/tags/vX.Y.Z` for a tag push and therefore different per tag, so two tags pushed back to back got separate groups of size one and did not serialize -- defeating the block's purpose. All release runs now queue on one group.
+
+### Changed
+- **Node 18 is no longer supported**: `engines.node` is `>=20` (Node 18 reached end of life on 2025-04-30), the CI matrix is Node 20 and 22, and `build.mjs` targets `node20` so esbuild stops down-levelling syntax for a runtime that is not shipped to.
+- `--version` accepts the short forms `-v` and `-V` alongside the bare `version` subcommand, for parity with most CLIs.
+- `release.yml` delegates lint, build and test to `ci.yml` through `workflow_call` instead of carrying its own copies, so the CI matrix (2 Node versions x 2 operating systems) also gates every tag push and there is one source of truth for it. `ci.yml` drops its separate build step: `npm test` already runs the build, so it compiled twice per job for no extra signal.
+- `release.sh` prints ASCII status glyphs (`[ok]`, `[!]`, `[x]`, `[FAIL]`) and `--` in place of the check marks and em-dashes, which Windows ConPTY mangles into mojibake when the output is captured or pasted.
 
 ## [0.11.2] — 2026-05-04
 
@@ -426,6 +502,7 @@ _Closes #1._
 [0.16.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.15.4...v0.16.0
 [0.15.4]: https://github.com/YawLabs/npmjs-mcp/compare/v0.15.3...v0.15.4
 [0.15.3]: https://github.com/YawLabs/npmjs-mcp/compare/v0.15.2...v0.15.3
+[0.15.2]: https://github.com/YawLabs/npmjs-mcp/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/YawLabs/npmjs-mcp/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/YawLabs/npmjs-mcp/compare/v0.14.0...v0.14.1
@@ -434,14 +511,18 @@ _Closes #1._
 [0.12.2]: https://github.com/YawLabs/npmjs-mcp/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/YawLabs/npmjs-mcp/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.15...v0.12.0
+[0.11.15]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.14...v0.11.15
+[0.11.14]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.13...v0.11.14
 [0.11.13]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.12...v0.11.13
 [0.11.12]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.11...v0.11.12
 [0.11.11]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.9...v0.11.11
 [0.11.9]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.8...v0.11.9
 [0.11.8]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.7...v0.11.8
+[0.11.7]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.6...v0.11.7
 [0.11.6]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.5...v0.11.6
 [0.11.5]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.4...v0.11.5
 [0.11.4]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.3...v0.11.4
+[0.11.3]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.10.0...v0.11.0

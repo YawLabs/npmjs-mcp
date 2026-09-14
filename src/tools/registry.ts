@@ -113,7 +113,8 @@ export const registryTools = [
                 "Message punctuation does NOT cause 422s. An earlier version of this playbook claimed a " +
                 "'period + capital letter' message triggered 422; follow-up diagnosis traced that incident to a " +
                 "wildcard version range matching no published versions, and the heuristic was removed in v0.10 " +
-                "for false positives. If a deprecate 422s, check the semver range against npm_versions first.",
+                "for false positives. A range matching no published version is rejected locally as HTTP 400 " +
+                "before any write; a real 422 from npm_deprecate describes the packument it sent.",
             },
           },
           undeprecate: "mcp_tool: npm_undeprecate",
@@ -132,8 +133,8 @@ export const registryTools = [
           ],
           localSteps: [
             "Used when the repo has no release.yml, or CI is unavailable.",
-            "Requires an active npm session — the human runs `npm login --auth-type=web` (WebAuthn, agent cannot initiate).",
-            "Once logged in: `bash release.sh X.Y.Z` or `npm publish --access public`.",
+            "Requires a publish-capable token in ~/.npmrc: a Granular Access Token with 'Read and write' permission and 2FA bypass. Do not run `npm login --auth-type=web` -- it replaces that token with a 2FA-bound web session, and the next headless publish fails on an OTP challenge.",
+            "Then: `bash release.sh X.Y.Z` or `npm publish --access public`.",
           ],
           why:
             "CI publish is reproducible — artifact built on a clean checkout with a scoped automation token, and the tag-push trigger makes every published version correspond to a git tag. " +
@@ -144,15 +145,22 @@ export const registryTools = [
           verifyToken: "mcp_tool: npm_verify_token (first step when debugging write failures)",
           envVar: "NPM_TOKEN",
           tokenTypes: {
-            granularAccess: "Requires 2FA for writes. Most common.",
-            classicAutomation: "Bypasses 2FA. Ideal for CI.",
-            classicPublish: "Requires 2FA for writes.",
+            granularAccess:
+              "The only token type npm still issues. Requires an interactive 2FA challenge for writes unless created with 2FA bypass.",
+            granularWith2faBypass:
+              "Headless deprecate, undeprecate, dist-tag and unpublish. Since 2026-07-31 it can NOT create or delete tokens, change package access or maintainers, or manage org/team membership and package grants -- those need an interactive 2FA challenge from a human. npm is targeting January 2027 to remove its direct-publish permission as well.",
+            classic: "Classic tokens, including Automation tokens, were revoked on 2025-12-09 and cannot be recreated.",
           },
         },
         cliFallback: {
-          when: "When an MCP write op returns 422 despite valid token (rare, account-level 2FA policy)",
-          sequence: ["npm login --auth-type=web", "npm <deprecate|unpublish|dist-tag> <args>"],
-          who: "End user runs in their terminal — MCP server cannot initiate browser auth.",
+          when:
+            "When a write op returns 401 or 403 on a change that needs interactive 2FA (owner, access, team membership or grant, org membership, token changes), " +
+            "or a 422 whose message names a CLI equivalent. An OTP challenge arrives as 401 and a 2FA-policy refusal as 403, never as 422.",
+          sequence: [
+            "For deprecate, undeprecate, dist-tag and unpublish: a Granular Access Token with 2FA bypass set as NPM_TOKEN makes the change headlessly.",
+            "For everything else, and whenever the error names one: the human runs the npm CLI equivalent in their own terminal and answers the one-time-password prompt (or passes --otp=<code>).",
+          ],
+          who: "End user runs in their terminal — MCP server cannot answer an OTP prompt.",
         },
       },
     }),

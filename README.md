@@ -17,8 +17,8 @@ One click adds this to your local Yaw MCP config so it's available in every Yaw 
 Other npm MCP servers wrap `npm search` and call it done. This one doesn't.
 
 - **Full registry HTTP surface** — 64 tools across reads, writes, orgs, teams, hooks, provenance, trusted publishers, and ops health. Not just `npm view`.
-- **Write ops that actually work in agents** — `npm_deprecate`, `npm_dist_tag_set`, `npm_owner_add`, `npm_unpublish_version` go directly to the HTTP API with your token. No 2FA prompts, no `--otp` hunts, no `ENEEDAUTH` from a session-bound `.npmrc`.
-- **Agent-aware failure surfacing** — write tools detect non-interactive context and return specific human-runnable commands (`npm login --auth-type=web`) instead of looping on unrecoverable errors.
+- **Write ops that actually work in agents** — `npm_deprecate`, `npm_undeprecate`, `npm_dist_tag_set`, `npm_unpublish_version` go directly to the HTTP API with a Granular Access Token that has 2FA bypass. No 2FA prompts, no `--otp` hunts, no `ENEEDAUTH` from a session-bound `.npmrc`. (Since 2026-07-31 npm requires an interactive 2FA challenge for owner, access, team membership and grant, org membership and token changes even with 2FA bypass; for those tools the error names the exact `npm` command a human runs.)
+- **Agent-aware failure surfacing** — `npm_check_auth` and `npm_publish_preflight` detect a non-interactive context and hand back a human-runnable command, and every write error names what was sent and the npm CLI equivalent, instead of looping on unrecoverable errors.
 - **Safety by default** — `npm_unpublish_*` requires `confirm: true`. `npm_owner_remove` blocks you from locking yourself out. `npm_deprecate` rejects a message over the registry's 1024-character limit before sending it.
 - **Ops playbook built in** — `npm_ops_playbook` returns the canonical tool-vs-CLI-vs-CI decision matrix so your agent picks the right path on the first try.
 - **Tool annotations** — every tool declares `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`, so MCP clients can skip confirmation on safe ops.
@@ -96,7 +96,7 @@ That's it. Now ask your AI assistant:
 
 | Environment variable | Default | Description |
 |---|---|---|
-| `NPM_TOKEN` | (none) | npm access token. Required only for write/auth/org/access/hooks tools. A Granular Access Token is strongly preferred over a Classic Automation token. |
+| `NPM_TOKEN` | (none) | npm access token. Required only for write/auth/org/access/hooks tools. Use a Granular Access Token (with 2FA bypass for headless writes); classic tokens, including Automation tokens, were revoked in December 2025. |
 | `NPM_REGISTRY` | `https://registry.npmjs.org` | Alternate registry (enterprise/private). Must support the npm HTTP API shape. |
 | `NPM_REQUEST_TIMEOUT_MS` | `30000` | Timeout for each attempt of a registry request, in milliseconds, including reading the body. A read retries a timeout, a network error, or HTTP 429/502/503/504, up to 3 attempts in all, so a stalled read can take about three times this value. A write is never re-sent after a timeout or network error, because the registry may already have applied it; it retries only on 429/503. A value that is not a positive, finite number (`Infinity` included) falls back to the default, so the timeout cannot be turned off. |
 | `NPM_RETRY_BACKOFF_MS` | `500` | Base wait before a retry, doubled each time: 500 ms, then 1000 ms by default. When the retried response carries a `Retry-After` header, that wait (capped at 30 s) is used instead, whatever this is set to. `0`, an empty value, or whitespace removes the backoff wait. Any other negative or non-numeric value falls back to the default. |
@@ -249,10 +249,11 @@ These bypass the CLI/2FA friction that makes `npm deprecate` and friends fail lo
 | Operation | Preferred path | Why |
 |---|---|---|
 | Read (search/view/stats) | These MCP tools, no auth | Fast, zero friction |
-| Deprecate / dist-tag / owner / team / hook | `npm_deprecate`, `npm_dist_tag_*`, etc. | HTTP API, no CLI 2FA friction |
+| Deprecate / dist-tag / unpublish | `npm_deprecate`, `npm_dist_tag_*`, etc. | HTTP API, no CLI 2FA friction with a 2FA-bypass token |
+| Owner / access / team / org / token changes | `npm_owner_*`, `npm_access_set*`, `npm_team_*`, `npm_org_member_*`, `npm_token_revoke` | Since 2026-07-31 these need an interactive 2FA challenge; on 401/403 the error names the `npm` command a human runs |
 | Publish | `bash release.sh X.Y.Z` from the workstation | This repo has no CI release workflow (removed in b2c256c). Note: workstation publishes carry no sigstore provenance — `--provenance` needs CI OIDC. |
 | Unpublish | `npm_unpublish_version` (with `confirm: true`) | Safer than CLI; irreversible within 72h |
-| CLI fallback (rare) | `npm login --auth-type=web` then `npm <op>` | Only if MCP returns 422 |
+| CLI fallback | The `npm` command named in the error, run by a human who can answer the one-time-password prompt | On a 401/403 from a change that needs interactive 2FA, or a 422 whose message names it |
 
 Call `npm_ops_playbook` at the start of any session to get the up-to-date matrix.
 
@@ -297,7 +298,7 @@ name-to-versions map directly: `npm_audit({ packages: { lodash: ["4.17.20"] } })
 ### Debug a write failure
 
 ```
-> "My deprecate keeps returning 422 — what's wrong?"
+> "My deprecate keeps returning 401 — what's wrong?"
 → npm_verify_token()  // Confirms token scope, packages, 2FA state
 → npm_ops_playbook()  // Returns the canonical retry sequence
 ```
@@ -312,12 +313,13 @@ name-to-versions map directly: `npm_audit({ packages: { lodash: ["4.17.20"] } })
 **"HTTP 401 Unauthorized" or "HTTP 403 Forbidden"**
 
 - Your token lacks scope on the target package. Call `npm_verify_token` — it reports which packages and orgs the token can actually write.
-- If the package requires 2FA for writes, your token must be an automation token or come from an OIDC trusted publisher. A user token will 403.
+- An OTP challenge arrives as a 401 and a 2FA-policy refusal as a 403; neither is ever a 422. For deprecate, undeprecate, dist-tag and unpublish, a Granular Access Token with 2FA bypass enabled fixes both. Classic tokens, including Automation tokens, were revoked in December 2025.
+- Owner, access, team membership and grant, org membership and token changes need an interactive 2FA challenge since 2026-07-31, even from a token with 2FA bypass. No token fixes those: the error names the exact `npm` command for a human to run and answer the one-time-password prompt.
 
-**"HTTP 422 Unprocessable" on deprecate**
+**"HTTP 422 Unprocessable" on a write**
 
-- The 422 message lists three common causes. `npm_deprecate` checks the first two before it writes anything: a `versionRange` that matches no published version, and a message over 1024 characters. Both come back as HTTP 400 with the reason, not a 422. The range error lists the published versions, so correct the range from that list or with `npm_versions`.
-- That leaves the third cause for a 422 from `npm_deprecate`: an account-level 2FA policy that requires an interactive CLI session. The error message names the fallback: `npm login --auth-type=web`, followed by the equivalent npm CLI command (here, `npm deprecate`).
+- Read the `Raw:` body at the end first; it is the registry's actual reason. Before it, the message says what that call sent and the documented npm rules it could have broken, then (where one exists) the npm CLI equivalent, which prints the registry's full error and prompts for a one-time password if needed.
+- For `npm_deprecate`, a `versionRange` that matches no published version and a message over 1024 characters are both rejected locally as HTTP 400 before any write, so neither is a 422 cause. The range error lists the published versions; correct the range from that list or with `npm_versions`.
 - Message punctuation is not a cause. Swapping a trailing period for an em-dash will not clear a 422.
 
 **Windows: MCP server doesn't start**

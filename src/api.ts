@@ -212,8 +212,8 @@ export function requireAuth<T = unknown>(): ApiResponse<T> | null {
     status: 401,
     error:
       "No NPM_TOKEN configured. Set the NPM_TOKEN environment variable to use authenticated endpoints. " +
-      "Create a token at https://www.npmjs.com/settings/~/tokens — use a Granular Access Token for CI/CD " +
-      "(automation tokens bypass 2FA).",
+      "Create a Granular Access Token at https://www.npmjs.com/settings/~/tokens, with 2FA bypass enabled for headless writes " +
+      "(classic tokens, including Automation tokens, were revoked in December 2025).",
   };
 }
 

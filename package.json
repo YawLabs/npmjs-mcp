@@ -9,6 +9,9 @@
     "type": "git",
     "url": "git+https://github.com/YawLabs/npmjs-mcp.git"
   },
+  "bugs": {
+    "url": "https://github.com/YawLabs/npmjs-mcp/issues"
+  },
   "keywords": [
     "npm",
     "npmjs",
@@ -29,7 +32,8 @@
     "dependencies",
     "security",
     "audit",
-    "provenance"
+    "provenance",
+    "ai-agents"
   ],
   "type": "module",
   "main": "dist/index.js",

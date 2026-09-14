@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - npm and MCP Registry listing metadata: bugs URL, core keywords, and server.json title/repository/websiteUrl.
+- `release.sh` writes a `## [x.y.z]` changelog entry for every release -- promoting `[Unreleased]` when it has content, otherwise generating one from the commit subjects since the previous tag -- keeps the Keep-a-Changelog link references current, and takes the GitHub release notes from that entry, falling back to `git log` subjects only when the repo has no changelog at all. Before this, a release with nothing under `[Unreleased]` got no entry and a release page of raw commit subjects (0.16.0 below is backfilled and its release notes rewritten); the link references, which had stopped at 0.11.2, are extended through 0.16.0.
+
+## [0.16.0] -- 2026-09-13
+
+Release tooling and README only; no change to the published server's behavior.
+
+### Changed
+- `release.sh` waits for npm to actually serve the new version before publishing to the MCP Registry (#47). `npm publish` returns as soon as the registry accepts the tarball, but the version is not immediately readable from npm's CDN-backed read path, and the MCP Registry validates a publish by reading it -- so a registry step run straight after the publish could fail with `version '<x>' was not found (status: 404)` and cost a second run (ssh-mcp 0.15.3 and three consecutive aws-mcp releases did exactly that). The gate polls with `curl` rather than `npm view`, whose 5-minute metadata cache can outlast the condition it is waiting on, and requests the exact URL the registry's npm validator builds (`https://registry.npmjs.org/@yawlabs%2Fnpmjs-mcp/<version>`, scope slash percent-encoded), since a literal-slash URL can be a different CDN cache entry. It warns rather than fails on timeout so `mcp-publisher` still reports its own precise error; `SKIP_NPM_WAIT=1` bypasses it, `NPM_WAIT_TIMEOUT_S` retunes the 300s default, and it is skipped with a warning when `curl` is absent.
+
+### Documentation
+- README: the X follow badge moved from the top of the page to the bottom, so the description leads on npm and GitHub (#48).
 
 ## [0.15.4] -- 2026-09-13
 
@@ -407,8 +418,30 @@ _Closes #1._
 - Initial release — 22 tools for npm registry intelligence (read-side).
 - Tool definition tests.
 
-[Unreleased]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.15.4...v0.16.0
+[0.15.4]: https://github.com/YawLabs/npmjs-mcp/compare/v0.15.3...v0.15.4
+[0.15.3]: https://github.com/YawLabs/npmjs-mcp/compare/v0.15.2...v0.15.3
+[0.15.1]: https://github.com/YawLabs/npmjs-mcp/compare/v0.15.0...v0.15.1
+[0.15.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.14.1...v0.15.0
+[0.14.1]: https://github.com/YawLabs/npmjs-mcp/compare/v0.14.0...v0.14.1
+[0.14.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.12.2...v0.13.0
+[0.12.2]: https://github.com/YawLabs/npmjs-mcp/compare/v0.12.1...v0.12.2
+[0.12.1]: https://github.com/YawLabs/npmjs-mcp/compare/v0.12.0...v0.12.1
+[0.12.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.15...v0.12.0
+[0.11.13]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.12...v0.11.13
+[0.11.12]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.11...v0.11.12
+[0.11.11]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.9...v0.11.11
+[0.11.9]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.8...v0.11.9
+[0.11.8]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.7...v0.11.8
+[0.11.6]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.5...v0.11.6
+[0.11.5]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.4...v0.11.5
+[0.11.4]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.3...v0.11.4
 [0.11.2]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.1...v0.11.2
+[0.11.1]: https://github.com/YawLabs/npmjs-mcp/compare/v0.11.0...v0.11.1
+[0.11.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.6.0...v0.7.0

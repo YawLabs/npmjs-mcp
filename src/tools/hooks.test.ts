@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
+import { CALL_HINTS, REGISTRY_CALLS, type RegistryCall } from "../errors.js";
 import { hookTools } from "./hooks.js";
 
 interface CapturedRequest {
@@ -251,6 +252,46 @@ describe("npm_hook_get / update / remove", () => {
     await tool.handler({ id: "h1" });
     assert.equal(lastRequest!.method, "DELETE");
     assert.match(lastRequest!.url, /\/hooks\/hook\/h1$/);
+  });
+});
+
+// One row per hook write: the 422 must carry that call's own CALL_HINTS row,
+// so a call site omitting or swapping `call` fails here. `npm hook` was removed
+// in npm 11, so no hook row names a CLI command.
+describe("per-call wording, hook writes", () => {
+  const rows: Array<{ tool: string; call: RegistryCall; input: Record<string, unknown> }> = [
+    {
+      tool: "npm_hook_add",
+      call: "hook-post",
+      input: { target: "@yawlabs/pkg", endpoint: "https://example.com/h", secret: "s" },
+    },
+    { tool: "npm_hook_update", call: "hook-put", input: { id: "h1", endpoint: "https://example.com/h", secret: "s" } },
+    { tool: "npm_hook_remove", call: "hook-delete", input: { id: "h1" } },
+  ];
+  for (const row of rows) {
+    it(`${row.tool} carries the ${row.call} row on 422`, async () => {
+      mockFetch(422, { error: "Unprocessable" });
+      const tool = findTool(row.tool);
+      const result = (await tool.handler(row.input)) as { ok: boolean; status: number; error: string };
+      assert.equal(result.ok, false);
+      assert.equal(result.status, 422);
+      assert.ok(
+        result.error.includes(CALL_HINTS[row.call].check),
+        `${row.tool}: not its own row:
+${result.error}`,
+      );
+      assert.doesNotMatch(result.error, /CLI equivalent|npm hook /, row.tool);
+    });
+  }
+
+  it("every hook write tool has a row, and every hook RegistryCall is exercised", () => {
+    const writeHooks = hookTools
+      .filter((t) => !(t as unknown as { annotations: { readOnlyHint: boolean } }).annotations.readOnlyHint)
+      .map((t) => t.name)
+      .sort();
+    assert.deepEqual(rows.map((r) => r.tool).sort(), writeHooks);
+    const hookCalls = REGISTRY_CALLS.filter((c) => c.startsWith("hook-")).sort();
+    assert.deepEqual(rows.map((r) => r.call).sort(), hookCalls);
   });
 });
 

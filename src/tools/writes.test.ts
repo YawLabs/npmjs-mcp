@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import { versionsSatisfying } from "../api.js";
-import { translateError, validateDeprecationMessage } from "../errors.js";
+import {
+  CALL_HINTS,
+  REGISTRY_CALLS,
+  type RegistryCall,
+  translateError,
+  validateDeprecationMessage,
+} from "../errors.js";
 import { authTools } from "./auth.js";
 import { registryTools } from "./registry.js";
 import { writeTools } from "./writes.js";
@@ -126,12 +132,136 @@ describe("translateError", () => {
     assert.match(out.error!, /scoped packages require the @scope\//);
   });
 
-  it("422 translates with semver, 1024-char, and CLI fallback guidance", () => {
+  it("401 and 403 place OTP at 401 and 2FA policy at 403, never recommend npm login or a classic token", () => {
+    for (const status of [401, 403]) {
+      const out = translateError({ ok: false, status, error: "x" }, { pkg: "@test/pkg" }).error!;
+      assert.match(out, /OTP challenge arrives as 401 and a 2FA-policy refusal as 403, never as 422/, `${status}`);
+      assert.match(out, /Granular Access Token with 'Read and write' permission and 2FA bypass/, `${status}`);
+      assert.match(out, /revoked in December 2025/, `${status}`);
+      assert.doesNotMatch(out, /npm login|auth-type=web|use a classic|classic Automation token, which/i, `${status}`);
+      // No call means a read or pre-write step: the neutral wording, no "this change".
+      assert.match(out, /for headless writes/, `${status}`);
+    }
+  });
+
+  it("401 and 403 on a call npm restricted on 2026-07-31 send a human to the CLI, not to a new token", () => {
+    const interactive = REGISTRY_CALLS.filter((c) => CALL_HINTS[c].interactive2fa);
+    // Exactly the calls npm's 2026-07-31 list covers: tokens, package access,
+    // maintainers, org/team membership and package grants. Team create and
+    // destroy are not on it.
+    assert.deepEqual([...interactive].sort(), [
+      "access-mfa-post",
+      "access-post",
+      "org-user-delete",
+      "org-user-put",
+      "packument-put-maintainer-add",
+      "packument-put-maintainer-remove",
+      "team-package-delete",
+      "team-package-put",
+      "team-user-delete",
+      "team-user-put",
+      "token-delete",
+    ]);
+    for (const status of [401, 403]) {
+      const out = translateError(
+        { ok: false, status, error: "x" },
+        { pkg: "@t/p", call: "packument-put-maintainer-add" },
+      ).error!;
+      assert.match(out, /Since 2026-07-31 npm requires an interactive 2FA challenge/, `${status}`);
+      assert.match(out, /a human runs `npm owner add <user> @t\/p`/, `${status}`);
+      assert.doesNotMatch(out, /2FA bypass enabled \(https/, `${status}`);
+    }
+    // A write NOT on the list keeps the token advice, worded for the change.
+    const dep = translateError({ ok: false, status: 401, error: "x" }, { call: "packument-put-deprecate" }).error!;
+    assert.match(dep, /answers both for this change/);
+    assert.doesNotMatch(dep, /Since 2026-07-31/);
+  });
+
+  it("422 with no call falls back to the read wording", () => {
     const out = translateError({ ok: false, status: 422, error: "Unprocessable" }, { pkg: "@test/pkg" });
     assert.match(out.error!, /422/);
-    assert.match(out.error!, /semver range/);
-    assert.match(out.error!, /1024/);
-    assert.match(out.error!, /npm login --auth-type=web/);
+    assert.match(out.error!, /not known to answer a read/);
+    assert.match(out.error!, /NPM_REGISTRY/);
+    assert.match(out.error!, /Raw: Unprocessable$/);
+    // The retired causes must not come back through the default branch, and a
+    // CLI command belongs to write calls only.
+    assert.doesNotMatch(out.error!, /semver range|1024|auth-type=web|npm login|2FA|OTP|deprecat|CLI equivalent/);
+  });
+
+  it("every RegistryCall renders one line that ends in the raw body, for 401, 403 and 422", () => {
+    for (const call of REGISTRY_CALLS) {
+      for (const status of [401, 403, 422]) {
+        const out = translateError({ ok: false, status, error: "boom" }, { call, pkg: "@t/p" }).error!;
+        assert.ok(!out.includes("\n"), `${call} ${status}: multi-line`);
+        assert.ok(out.endsWith("Raw: boom"), `${call} ${status}: missing Raw suffix`);
+        assert.doesNotMatch(out, /undefined/, `${call} ${status}`);
+      }
+      const unprocessable = translateError({ ok: false, status: 422, error: "boom" }, { call }).error!;
+      assert.ok(unprocessable.includes(CALL_HINTS[call].check), `${call}: 422 does not carry its own row`);
+    }
+  });
+
+  it("every call hint is distinct", () => {
+    const texts = new Set(REGISTRY_CALLS.map((call) => CALL_HINTS[call].check));
+    assert.equal(texts.size, REGISTRY_CALLS.length);
+  });
+
+  it("no 422 hint names a retired cause", () => {
+    // 2FA may appear only where it is about the TARGET account's settings.
+    const aboutTargetAccount = new Set<RegistryCall>(["access-mfa-post", "org-user-put"]);
+    for (const call of REGISTRY_CALLS) {
+      const out = translateError({ ok: false, status: 422, error: "x" }, { call }).error!;
+      assert.doesNotMatch(out, /auth-type=web|npm login|semver range matches no|1024|Automation token/i, call);
+      if (!aboutTargetAccount.has(call)) assert.doesNotMatch(out, /\b2FA\b|two-factor/i, call);
+    }
+  });
+
+  it("only rows with an npm 11 command name a CLI equivalent", () => {
+    // `npm hook` was removed in npm 11; reads have no single command.
+    const noCli = new Set<RegistryCall>(["read", "hook-post", "hook-put", "hook-delete"]);
+    for (const call of REGISTRY_CALLS) {
+      const out = translateError({ ok: false, status: 422, error: "x" }, { call }).error!;
+      if (noCli.has(call)) assert.doesNotMatch(out, /CLI equivalent/, call);
+      else assert.match(out, /CLI equivalent[^`]*`npm /, call);
+    }
+  });
+
+  it("<pkg> is substituted from context.pkg and left as a placeholder without it", () => {
+    const withPkg = translateError({ ok: false, status: 422, error: "x" }, { call: "dist-tag-put", pkg: "@t/p" })
+      .error!;
+    assert.match(withPkg, /npm dist-tag add @t\/p@<version> <tag>/);
+    const withoutPkg = translateError({ ok: false, status: 422, error: "x" }, { call: "dist-tag-put" }).error!;
+    assert.match(withoutPkg, /npm dist-tag add <pkg>@<version> <tag>/);
+    // No pkg and no op: the preamble carries neither " for <pkg>" nor " during <op>".
+    assert.match(withoutPkg, /^Registry rejected the request \(422 Unprocessable Entity\)\. /);
+  });
+
+  it("<pkg> substitution is literal: `$` patterns in the package are not expanded", () => {
+    for (const pkg of ["a$&b", "a$$b", "x$'y"]) {
+      const rendered = translateError({ ok: false, status: 422, error: "x" }, { call: "dist-tag-delete", pkg }).error!;
+      assert.ok(rendered.includes(`\`npm dist-tag rm ${pkg} <tag>\``), `${pkg}: ${rendered}`);
+    }
+  });
+
+  it("an unrecognized call falls back to read and never prints undefined", () => {
+    const out = translateError({ ok: false, status: 422, error: "x" }, { call: "bogus" as RegistryCall }).error!;
+    assert.match(out, /not known to answer a read/);
+    assert.doesNotMatch(out, /undefined/);
+  });
+
+  it("op stays prose in the 422 preamble", () => {
+    const out = translateError(
+      { ok: false, status: 422, error: "x" },
+      { pkg: "@t/p", op: "deprecate (write)", call: "packument-put-deprecate" },
+    ).error!;
+    assert.match(out, /^Registry rejected the request for @t\/p during deprecate \(write\) \(422/);
+  });
+
+  it("token-delete never echoes a key", () => {
+    const out = translateError({ ok: false, status: 422, error: "x" }, { call: "token-delete", op: "token_revoke" })
+      .error!;
+    assert.doesNotMatch(out, /[0-9a-f]{8,}/);
+    assert.match(out, /npm token revoke <id\|token>/);
   });
 
   it("passes through 2xx unchanged", () => {
@@ -481,12 +611,30 @@ describe("npm_deprecate", () => {
     })) as { ok: boolean; status: number; error: string };
     assert.equal(result.ok, false);
     assert.equal(result.status, 422);
-    assert.match(result.error, /Registry rejected the request payload/);
+    assert.match(result.error, /Registry rejected the request/);
     assert.match(result.error, /422/);
-    assert.match(result.error, /semver range/);
+    // The deprecate-specific wording: what was sent, and the CLI equivalent
+    // with the package substituted. Never the causes the handler pre-checks.
+    assert.match(result.error, /with `deprecated` set on the versions matching the range/);
+    assert.match(result.error, /npm deprecate @test\/pkg@"<range>"/);
+    assert.doesNotMatch(result.error, /semver range|1024|auth-type/);
     // Confirm the failure came from the PUT step, not the GET.
     assert.equal(requests.length, 2);
     assert.equal(requests[1].method, "PUT");
+  });
+
+  it("a 422 from the pre-write GET gets the read wording, not the deprecate wording", async () => {
+    mockFetchSequence([{ status: 422, body: { error: "Unprocessable" } }]);
+    const tool = findTool(writeTools, "npm_deprecate");
+    const result = (await tool.handler({
+      name: "@test/pkg",
+      message: "deprecated — use newpkg",
+    })) as { ok: boolean; status: number; error: string };
+    assert.equal(result.ok, false);
+    assert.match(result.error, /during deprecate \(fetch\)/);
+    assert.match(result.error, /not known to answer a read/);
+    assert.doesNotMatch(result.error, /`deprecated`|npm deprecate/);
+    assert.equal(requests.length, 1);
   });
 
   it("surfaces a translated 409 when the conflict survives the single retry", async () => {
@@ -1573,6 +1721,223 @@ describe("npm_verify_token", () => {
   });
 });
 
+// ─── per-call wording, one row per write tool ───
+//
+// For every write tool the registry rejects the WRITE step, and the message
+// must carry that call's own CALL_HINTS row. Each row names the call its
+// handler must pass, so the assertion is the table itself: a call site that
+// omits `call` (falls to the read wording) or passes a neighbour's fails
+// here, independent of the prose `op` label. The guard tests below fail when
+// a write tool or a RegistryCall is added without a row.
+
+describe("per-call wording, one row per write tool", () => {
+  const unpublishPkg = () =>
+    samplePackument({
+      versions: {
+        "0.1.0": { name: "@test/pkg", version: "0.1.0" },
+        "0.2.0": { name: "@test/pkg", version: "0.2.0" },
+        "1.0.0": { name: "@test/pkg", version: "1.0.0" },
+      },
+    });
+  const ok = (body: unknown = {}) => ({ status: 200, body });
+  const twoOwners = () =>
+    samplePackument({
+      maintainers: [
+        { name: "alice", email: "alice@test.com" },
+        { name: "bob", email: "bob@test.com" },
+      ],
+    });
+
+  const rows: Array<{
+    tool: string;
+    call: RegistryCall;
+    input: Record<string, unknown>;
+    /** Responses before the rejected write step. */
+    before: Array<{ status: number; body: unknown }>;
+    cli: RegExp;
+  }> = [
+    {
+      tool: "npm_deprecate",
+      call: "packument-put-deprecate",
+      input: { name: "@test/pkg", message: "deprecated -- use newpkg" },
+      before: [ok(samplePackument())],
+      cli: /`npm deprecate @test\/pkg@"<range>" "<message>"`/,
+    },
+    {
+      tool: "npm_undeprecate",
+      call: "packument-put-undeprecate",
+      input: { name: "@test/pkg" },
+      before: [ok(samplePackument())],
+      cli: /`npm undeprecate @test\/pkg@"<range>"`/,
+    },
+    {
+      tool: "npm_unpublish_version",
+      call: "packument-put-drop-version",
+      input: { name: "@test/pkg", version: "0.1.0", confirm: true },
+      before: [ok(unpublishPkg())],
+      cli: /`npm unpublish @test\/pkg@<version>`/,
+    },
+    {
+      tool: "npm_unpublish_package",
+      call: "packument-delete",
+      input: { name: "@test/pkg", confirm: true },
+      before: [ok(samplePackument())],
+      cli: /`npm unpublish @test\/pkg --force`/,
+    },
+    {
+      tool: "npm_dist_tag_set",
+      call: "dist-tag-put",
+      input: { name: "@test/pkg", tag: "beta", version: "1.0.0" },
+      before: [ok(samplePackument())],
+      cli: /`npm dist-tag add @test\/pkg@<version> <tag>`/,
+    },
+    {
+      tool: "npm_dist_tag_remove",
+      call: "dist-tag-delete",
+      input: { name: "@test/pkg", tag: "beta" },
+      before: [],
+      cli: /`npm dist-tag rm @test\/pkg <tag>`/,
+    },
+    {
+      tool: "npm_owner_add",
+      call: "packument-put-maintainer-add",
+      input: { name: "@test/pkg", username: "bob" },
+      before: [ok({ name: "bob", email: "bob@test.com" }), ok(samplePackument())],
+      cli: /`npm owner add <user> @test\/pkg`/,
+    },
+    {
+      tool: "npm_owner_remove",
+      call: "packument-put-maintainer-remove",
+      input: { name: "@test/pkg", username: "bob" },
+      before: [ok(twoOwners())],
+      cli: /`npm owner rm <user> @test\/pkg`/,
+    },
+    {
+      tool: "npm_access_set",
+      call: "access-post",
+      input: { name: "@test/pkg", access: "private" },
+      before: [],
+      cli: /`npm access set status=public\|private @test\/pkg`/,
+    },
+    {
+      tool: "npm_access_set_mfa",
+      call: "access-mfa-post",
+      input: { name: "@test/pkg", level: "publish" },
+      before: [],
+      cli: /`npm access set mfa=none\|publish\|automation @test\/pkg`/,
+    },
+    {
+      tool: "npm_team_grant",
+      call: "team-package-put",
+      input: { team: "@yawlabs:devs", package: "@yawlabs/pkg", permissions: "read-write" },
+      before: [],
+      cli: /`npm access grant <read-only\|read-write> <scope:team> @yawlabs\/pkg`/,
+    },
+    {
+      tool: "npm_team_revoke",
+      call: "team-package-delete",
+      input: { team: "@yawlabs:devs", package: "@yawlabs/pkg" },
+      before: [],
+      cli: /`npm access revoke <scope:team> @yawlabs\/pkg`/,
+    },
+    {
+      tool: "npm_team_create",
+      call: "team-put",
+      input: { team: "@yawlabs:devs", description: "dev team" },
+      before: [],
+      cli: /`npm team create <scope:team>`/,
+    },
+    {
+      tool: "npm_team_delete",
+      call: "team-delete",
+      input: { team: "@yawlabs:devs", confirm: true },
+      before: [],
+      cli: /`npm team destroy <scope:team>`/,
+    },
+    {
+      tool: "npm_team_member_add",
+      call: "team-user-put",
+      input: { team: "@yawlabs:devs", user: "bob" },
+      before: [],
+      cli: /`npm team add <scope:team> <user>`/,
+    },
+    {
+      tool: "npm_team_member_remove",
+      call: "team-user-delete",
+      input: { team: "@yawlabs:devs", user: "bob" },
+      before: [],
+      cli: /`npm team rm <scope:team> <user>`/,
+    },
+    {
+      tool: "npm_org_member_set",
+      call: "org-user-put",
+      input: { org: "yawlabs", user: "bob", role: "developer", confirm: true },
+      before: [],
+      cli: /`npm org set <org> <user> <developer\|admin\|owner>`/,
+    },
+    {
+      tool: "npm_org_member_remove",
+      call: "org-user-delete",
+      input: { org: "yawlabs", user: "bob", confirm: true },
+      before: [],
+      cli: /`npm org rm <org> <user>`/,
+    },
+    {
+      tool: "npm_token_revoke",
+      call: "token-delete",
+      input: { tokenKey: "a1b2c3d4-e5f6-7890", confirm: true },
+      before: [],
+      cli: /`npm token revoke <id\|token>`/,
+    },
+  ];
+
+  const run = async (row: (typeof rows)[number], status: number) => {
+    mockFetchSequence([...row.before, { status, body: { error: "rejected" } }]);
+    const tool = findTool(writeTools, row.tool);
+    const result = (await tool.handler(row.input)) as { ok: boolean; status: number; error: string };
+    assert.equal(result.ok, false, row.tool);
+    assert.equal(result.status, status, row.tool);
+    // The rejection came from the last mocked call: the write step.
+    assert.equal(requests.length, row.before.length + 1, `${row.tool}: request count`);
+    return result.error;
+  };
+
+  for (const row of rows) {
+    it(`${row.tool} carries the ${row.call} row on 422`, async () => {
+      const error = await run(row, 422);
+      assert.ok(error.includes(CALL_HINTS[row.call].check), `${row.tool}: not its own row:\n${error}`);
+      assert.match(error, row.cli, row.tool);
+      // A token id must never be echoed into an error.
+      assert.doesNotMatch(error, /a1b2c3d4/, row.tool);
+    });
+
+    it(`${row.tool} gives ${CALL_HINTS[row.call].interactive2fa ? "the interactive-2FA" : "the token"} advice on 403`, async () => {
+      const error = await run(row, 403);
+      if (CALL_HINTS[row.call].interactive2fa) {
+        assert.match(error, /Since 2026-07-31 npm requires an interactive 2FA challenge/, row.tool);
+        assert.match(error, row.cli, row.tool);
+      } else {
+        assert.match(error, /2FA bypass enabled .* answers both for this change/, row.tool);
+        assert.doesNotMatch(error, /Since 2026-07-31/, row.tool);
+      }
+    });
+  }
+
+  it("every write tool has a row", () => {
+    const writeToolNames = writeTools
+      .filter((t) => !(t as unknown as { annotations: { readOnlyHint: boolean } }).annotations.readOnlyHint)
+      .map((t) => t.name)
+      .sort();
+    assert.deepEqual(rows.map((r) => r.tool).sort(), writeToolNames);
+  });
+
+  it("every non-read, non-hook RegistryCall is exercised by a row (hooks: hooks.test.ts)", () => {
+    const covered = new Set(rows.map((r) => r.call));
+    const uncovered = REGISTRY_CALLS.filter((c) => c !== "read" && !c.startsWith("hook-") && !covered.has(c));
+    assert.deepEqual(uncovered, [], "a RegistryCall was added without a handler-level test");
+  });
+});
+
 // ─── npm_ops_playbook ───
 
 describe("npm_ops_playbook", () => {
@@ -1588,5 +1953,33 @@ describe("npm_ops_playbook", () => {
     assert.ok(result.data.publish);
     assert.ok(result.data.auth);
     assert.ok(result.data.cliFallback);
+  });
+
+  it("gives current token and 2FA guidance: no npm login, no classic tokens, the 2026-07-31 limits", async () => {
+    const tool = findTool(registryTools, "npm_ops_playbook");
+    const result = (await tool.handler({})) as {
+      ok: boolean;
+      data: { cliFallback: unknown; write: unknown; auth: { tokenTypes: Record<string, string> }; publish: unknown };
+    };
+    const fallback = JSON.stringify(result.data.cliFallback);
+    assert.doesNotMatch(fallback, /auth-type=web|npm login|Automation token/);
+    assert.match(fallback, /401 and a 2FA-policy refusal as 403, never as 422/);
+    assert.match(fallback, /--otp=<code>/);
+    // The deprecate note must not send a 422 reader to re-check the range.
+    assert.doesNotMatch(JSON.stringify(result.data.write), /If a deprecate 422s/);
+    // Token types describe what npm issues today.
+    const tokens = JSON.stringify(result.data.auth.tokenTypes);
+    assert.match(tokens, /revoked on 2025-12-09/);
+    assert.match(tokens, /Since 2026-07-31 it can NOT/);
+    assert.doesNotMatch(tokens, /Ideal for CI/);
+    // Publishing no longer tells a human to overwrite their token with a web login.
+    assert.match(JSON.stringify(result.data.publish), /Do not run `npm login --auth-type=web`/);
+  });
+
+  it("npm_deprecate's description no longer blames 422s on 2FA or the range", () => {
+    const tool = findTool(writeTools, "npm_deprecate");
+    const description = (tool as unknown as { description: string }).description;
+    assert.doesNotMatch(description, /causes 422 errors|422s, first verify/);
+    assert.match(description, /HTTP 400/);
   });
 });

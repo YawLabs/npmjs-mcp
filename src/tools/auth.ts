@@ -193,7 +193,8 @@ export const authTools = [
           tfa,
           hint:
             "For write ops, token must have 'Read and write' scope on the target package. " +
-            "Granular Access Tokens require 2FA for writes; Classic Automation tokens bypass 2FA. " +
+            "Granular Access Tokens need 2FA bypass for headless writes, and since 2026-07-31 even bypass does not cover " +
+            "owner, access, team, org or token changes, which need a human at the CLI; classic tokens were revoked in December 2025. " +
             "Check your token's scope at https://www.npmjs.com/settings/~/tokens if writes return 401 or 403.",
         },
       };

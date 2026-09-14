@@ -3,7 +3,7 @@
  *
  * All writes use the HTTP API with Bearer token auth, bypassing the CLI/2FA friction
  * that local `npm <op>` commands hit. Requires NPM_TOKEN with write scope on the
- * target package (Granular Access Token or Classic Automation token).
+ * target package (a Granular Access Token; classic tokens were revoked in December 2025).
  *
  * Endpoint shapes mirror npm CLI / libnpmpublish / libnpmaccess / libnpmteam.
  */
@@ -80,10 +80,10 @@ export const writeTools = [
     name: "npm_deprecate",
     description:
       "Deprecate a package or specific versions. Shows a warning message on install. " +
-      "Uses the HTTP API with NPM_TOKEN, bypassing the CLI auth friction that causes 422 errors " +
-      "on accounts with 2FA. Registry hard limit: deprecation messages must be <= 1024 characters. " +
-      "If the registry 422s, first verify the semver range matches at least one published version " +
-      "(npm_versions) — range/version mismatches are the most common cause, not message format.",
+      "Uses the HTTP API with NPM_TOKEN, so no CLI login or OTP prompt is involved; a token without 2FA bypass is refused with 401 or 403. " +
+      "Registry hard limit: deprecation messages must be <= 1024 characters. A message over the limit, " +
+      "or a versionRange matching no published version, is rejected locally as HTTP 400 before any write; " +
+      "a 422 from the registry describes the packument that was sent. Message punctuation is never checked.",
     annotations: {
       title: "Deprecate package",
       readOnlyHint: false,
@@ -159,7 +159,8 @@ export const writeTools = [
         // 409 = CouchDB OCC conflict (a concurrent write beat us). Re-fetch and
         // re-apply the mutation on the next iteration. Only one retry.
         if (putRes.status === 409 && attempt === 0) continue;
-        if (!putRes.ok) return translateError(putRes, { pkg: input.name, op: "deprecate (write)" });
+        if (!putRes.ok)
+          return translateError(putRes, { pkg: input.name, op: "deprecate (write)", call: "packument-put-deprecate" });
 
         return {
           ok: true,
@@ -248,7 +249,12 @@ export const writeTools = [
         // 409 = CouchDB OCC conflict (a concurrent write beat us). Re-fetch and
         // re-apply the mutation on the next iteration. Only one retry.
         if (putRes.status === 409 && attempt === 0) continue;
-        if (!putRes.ok) return translateError(putRes, { pkg: input.name, op: "undeprecate (write)" });
+        if (!putRes.ok)
+          return translateError(putRes, {
+            pkg: input.name,
+            op: "undeprecate (write)",
+            call: "packument-put-undeprecate",
+          });
 
         return {
           ok: true,
@@ -372,7 +378,12 @@ export const writeTools = [
         `/${encPkg(input.name)}/-rev/${encodeURIComponent(packument._rev)}`,
         packument,
       );
-      if (!putRes.ok) return translateError(putRes, { pkg: input.name, op: "unpublish (packument PUT)" });
+      if (!putRes.ok)
+        return translateError(putRes, {
+          pkg: input.name,
+          op: "unpublish (packument PUT)",
+          call: "packument-put-drop-version",
+        });
 
       // Fetch fresh rev for the tarball DELETE.
       let tarballDeleted = false;
@@ -473,7 +484,8 @@ export const writeTools = [
       }
 
       const delRes = await registryDeleteAuth(`/${encPkg(input.name)}/-rev/${encodeURIComponent(rev)}`);
-      if (!delRes.ok) return translateError(delRes, { pkg: input.name, op: "unpublish_package (DELETE)" });
+      if (!delRes.ok)
+        return translateError(delRes, { pkg: input.name, op: "unpublish_package (DELETE)", call: "packument-delete" });
 
       return {
         ok: true,
@@ -532,7 +544,8 @@ export const writeTools = [
         `/-/package/${encPkg(input.name)}/dist-tags/${encTag(input.tag)}`,
         input.version,
       );
-      if (!putRes.ok) return translateError(putRes, { pkg: input.name, op: `dist-tag set ${input.tag}` });
+      if (!putRes.ok)
+        return translateError(putRes, { pkg: input.name, op: `dist-tag set ${input.tag}`, call: "dist-tag-put" });
 
       return {
         ok: true,
@@ -579,7 +592,8 @@ export const writeTools = [
       }
 
       const delRes = await registryDeleteAuth(`/-/package/${encPkg(input.name)}/dist-tags/${encTag(input.tag)}`);
-      if (!delRes.ok) return translateError(delRes, { pkg: input.name, op: `dist-tag remove ${input.tag}` });
+      if (!delRes.ok)
+        return translateError(delRes, { pkg: input.name, op: `dist-tag remove ${input.tag}`, call: "dist-tag-delete" });
 
       return {
         ok: true,
@@ -667,7 +681,12 @@ export const writeTools = [
         _rev: packument._rev,
         maintainers,
       });
-      if (!putRes.ok) return translateError(putRes, { pkg: input.name, op: "owner_add (write)" });
+      if (!putRes.ok)
+        return translateError(putRes, {
+          pkg: input.name,
+          op: "owner_add (write)",
+          call: "packument-put-maintainer-add",
+        });
 
       return {
         ok: true,
@@ -746,7 +765,12 @@ export const writeTools = [
         _rev: packument._rev,
         maintainers: after,
       });
-      if (!putRes.ok) return translateError(putRes, { pkg: input.name, op: "owner_remove (write)" });
+      if (!putRes.ok)
+        return translateError(putRes, {
+          pkg: input.name,
+          op: "owner_remove (write)",
+          call: "packument-put-maintainer-remove",
+        });
 
       return {
         ok: true,
@@ -791,7 +815,8 @@ export const writeTools = [
       const wireAccess = input.access === "private" ? "restricted" : input.access;
 
       const res = await registryPostAuth(`/-/package/${encPkg(input.name)}/access`, { access: wireAccess });
-      if (!res.ok) return translateError(res, { pkg: input.name, op: `access_set ${input.access}` });
+      if (!res.ok)
+        return translateError(res, { pkg: input.name, op: `access_set ${input.access}`, call: "access-post" });
 
       return {
         ok: true,
@@ -837,7 +862,8 @@ export const writeTools = [
       }
 
       const res = await registryPostAuth(`/-/package/${encPkg(input.name)}/access`, body);
-      if (!res.ok) return translateError(res, { pkg: input.name, op: `access_set_mfa ${input.level}` });
+      if (!res.ok)
+        return translateError(res, { pkg: input.name, op: `access_set_mfa ${input.level}`, call: "access-mfa-post" });
 
       return {
         ok: true,
@@ -888,7 +914,8 @@ export const writeTools = [
         package: input.package,
         permissions: input.permissions,
       });
-      if (!res.ok) return translateError(res, { pkg: input.package, op: `team_grant ${input.team}` });
+      if (!res.ok)
+        return translateError(res, { pkg: input.package, op: `team_grant ${input.team}`, call: "team-package-put" });
 
       return {
         ok: true,
@@ -937,7 +964,12 @@ export const writeTools = [
       const res = await registryDeleteAuth(`/-/team/${encScope(scope)}/${encTeam(team)}/package`, {
         package: input.package,
       });
-      if (!res.ok) return translateError(res, { pkg: input.package, op: `team_revoke ${input.team}` });
+      if (!res.ok)
+        return translateError(res, {
+          pkg: input.package,
+          op: `team_revoke ${input.team}`,
+          call: "team-package-delete",
+        });
 
       return {
         ok: true,
@@ -979,7 +1011,7 @@ export const writeTools = [
         name: team,
         description: input.description,
       });
-      if (!res.ok) return translateError(res, { op: `team_create ${input.team}` });
+      if (!res.ok) return translateError(res, { op: `team_create ${input.team}`, call: "team-put" });
 
       return { ok: true, status: 200, data: { team: `@${scope}:${team}`, created: true } };
     },
@@ -1025,7 +1057,7 @@ export const writeTools = [
       const { scope, team } = parsed;
 
       const res = await registryDeleteAuth(`/-/team/${encScope(scope)}/${encTeam(team)}`);
-      if (!res.ok) return translateError(res, { op: `team_delete ${input.team}` });
+      if (!res.ok) return translateError(res, { op: `team_delete ${input.team}`, call: "team-delete" });
 
       return { ok: true, status: 200, data: { team: `@${scope}:${team}`, deleted: true } };
     },
@@ -1065,7 +1097,7 @@ export const writeTools = [
       const res = await registryPutAuth(`/-/team/${encScope(scope)}/${encTeam(team)}/user`, {
         user: input.user,
       });
-      if (!res.ok) return translateError(res, { op: `team_member_add ${input.team}` });
+      if (!res.ok) return translateError(res, { op: `team_member_add ${input.team}`, call: "team-user-put" });
 
       return { ok: true, status: 200, data: { team: `@${scope}:${team}`, addedUser: input.user } };
     },
@@ -1104,7 +1136,7 @@ export const writeTools = [
       const res = await registryDeleteAuth(`/-/team/${encScope(scope)}/${encTeam(team)}/user`, {
         user: input.user,
       });
-      if (!res.ok) return translateError(res, { op: `team_member_remove ${input.team}` });
+      if (!res.ok) return translateError(res, { op: `team_member_remove ${input.team}`, call: "team-user-delete" });
 
       return { ok: true, status: 200, data: { team: `@${scope}:${team}`, removedUser: input.user } };
     },
@@ -1197,7 +1229,7 @@ export const writeTools = [
       if (role) body.role = role;
 
       const res = await registryPutAuth(`/-/org/${encScope(input.org)}/user`, body);
-      if (!res.ok) return translateError(res, { op: `org_member_set ${orgBare}/${userBare}` });
+      if (!res.ok) return translateError(res, { op: `org_member_set ${orgBare}/${userBare}`, call: "org-user-put" });
 
       // The effective role is now always known: either the caller's, the one we
       // read back off the roster, or the registry's documented default for a
@@ -1259,7 +1291,8 @@ export const writeTools = [
       const orgBare = input.org.replace(/^@/, "");
       const userBare = input.user.replace(/^@/, "");
       const res = await registryDeleteAuth(`/-/org/${encScope(input.org)}/user`, { user: userBare });
-      if (!res.ok) return translateError(res, { op: `org_member_remove ${orgBare}/${userBare}` });
+      if (!res.ok)
+        return translateError(res, { op: `org_member_remove ${orgBare}/${userBare}`, call: "org-user-delete" });
 
       return { ok: true, status: 200, data: { org: orgBare, removedUser: userBare } };
     },
@@ -1313,7 +1346,7 @@ export const writeTools = [
       }
 
       const res = await registryDeleteAuth(`/-/npm/v1/tokens/token/${encodeURIComponent(input.tokenKey)}`);
-      if (!res.ok) return translateError(res, { op: "token_revoke" });
+      if (!res.ok) return translateError(res, { op: "token_revoke", call: "token-delete" });
 
       return { ok: true, status: 200, data: { tokenKey: input.tokenKey, revoked: true } };
     },

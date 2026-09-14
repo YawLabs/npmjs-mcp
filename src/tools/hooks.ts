@@ -121,7 +121,7 @@ export const hookTools = [
         endpoint: input.endpoint,
         secret: input.secret,
       });
-      if (!res.ok) return translateError(res, { op: `hook_add ${input.target}` });
+      if (!res.ok) return translateError(res, { op: `hook_add ${input.target}`, call: "hook-post" });
 
       return { ok: true, status: 200, data: stripSecrets(res.data) };
     },
@@ -223,7 +223,7 @@ export const hookTools = [
         endpoint: input.endpoint,
         secret: input.secret,
       });
-      if (!res.ok) return translateError(res, { op: `hook_update ${input.id}` });
+      if (!res.ok) return translateError(res, { op: `hook_update ${input.id}`, call: "hook-put" });
 
       return { ok: true, status: 200, data: stripSecrets(res.data) };
     },
@@ -247,7 +247,7 @@ export const hookTools = [
       if (authErr) return authErr;
 
       const res = await registryDeleteAuth(`/-/npm/v1/hooks/hook/${encodeURIComponent(input.id)}`);
-      if (!res.ok) return translateError(res, { op: `hook_remove ${input.id}` });
+      if (!res.ok) return translateError(res, { op: `hook_remove ${input.id}`, call: "hook-delete" });
 
       return { ok: true, status: 200, data: { id: input.id, removed: true } };
     },

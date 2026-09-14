@@ -202,6 +202,10 @@ describe("validateDeprecationMessage", () => {
     assert.ok(err);
     assert.match(err!, /1024 characters/);
   });
+
+  it("accepts a message of exactly 1024 characters (the limit is inclusive)", () => {
+    assert.equal(validateDeprecationMessage("a".repeat(1024)), null);
+  });
 });
 
 describe("versionsSatisfying", () => {
@@ -295,16 +299,84 @@ describe("npm_deprecate", () => {
     assert.match(result.error, /1024/);
   });
 
-  it("returns 400 when no versions match range", async () => {
+  it("returns 400 when no versions match range, listing the published versions", async () => {
     mockFetchSequence([{ status: 200, body: samplePackument() }]);
     const tool = findTool(writeTools, "npm_deprecate");
     const result = (await tool.handler({
       name: "@test/pkg",
       message: "deprecated — migrate",
       versionRange: ">9.0.0",
-    })) as { ok: boolean; status: number };
+    })) as { ok: boolean; status: number; error: string };
     assert.equal(result.ok, false);
     assert.equal(result.status, 400);
+    assert.match(result.error, /No versions match range '>9\.0\.0' for @test\/pkg\./);
+    // The list is what the caller corrects the range from, so pin its contents.
+    assert.match(result.error, /Published versions: 0\.1\.0, 0\.2\.0, 1\.0\.0\./);
+    // Rejected before the write: only the GET went out.
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].method, "GET");
+  });
+
+  it("returns 400 naming '(none)' when the packument has no versions object", async () => {
+    const noVersions = samplePackument();
+    // biome-ignore lint/performance/noDelete: removing the key models a packument with no versions object
+    delete (noVersions as Record<string, unknown>).versions;
+    mockFetchSequence([{ status: 200, body: noVersions }]);
+    const tool = findTool(writeTools, "npm_deprecate");
+    const result = (await tool.handler({
+      name: "@test/pkg",
+      message: "deprecated — migrate",
+    })) as { ok: boolean; status: number; error: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 400);
+    assert.match(result.error, /No versions match range '\*' for @test\/pkg\./);
+    assert.match(result.error, /Published versions: \(none\)\./);
+    assert.equal(requests.length, 1);
+  });
+
+  it("writes the message onto exactly the versions inside versionRange in the PUT body", async () => {
+    // affectedVersions in the response is computed locally, so it cannot show
+    // what was sent. Only the PUT body proves which versions got deprecated.
+    mockFetchSequence([
+      { status: 200, body: samplePackument() },
+      { status: 200, body: {} },
+    ]);
+    const tool = findTool(writeTools, "npm_deprecate");
+    const message = "old — upgrade to 1.x";
+    const result = (await tool.handler({
+      name: "@test/pkg",
+      message,
+      versionRange: "<1.0.0",
+    })) as { ok: boolean };
+    assert.equal(result.ok, true);
+    assert.equal(requests[1].method, "PUT");
+    const versions = (requests[1].body as { versions: Record<string, Record<string, unknown>> }).versions;
+    assert.equal(versions["0.1.0"].deprecated, message);
+    assert.equal(versions["0.2.0"].deprecated, message);
+    assert.ok(!("deprecated" in versions["1.0.0"]), "1.0.0 is outside the range and must not be deprecated");
+  });
+
+  it("strips CouchDB _revisions and _attachments from the PUT body", async () => {
+    mockFetchSequence([
+      {
+        status: 200,
+        body: samplePackument({
+          _revisions: { start: 1, ids: ["abc"] },
+          _attachments: { "pkg-1.0.0.tgz": { content_type: "application/octet-stream", stub: true } },
+        }),
+      },
+      { status: 200, body: {} },
+    ]);
+    const tool = findTool(writeTools, "npm_deprecate");
+    const result = (await tool.handler({
+      name: "@test/pkg",
+      message: "deprecated — use newpkg",
+    })) as { ok: boolean };
+    assert.equal(result.ok, true);
+    const body = requests[1].body as Record<string, unknown>;
+    assert.ok(!("_revisions" in body), "_revisions must not be echoed back");
+    assert.ok(!("_attachments" in body), "_attachments must not be echoed back");
+    assert.ok("versions" in body);
   });
 
   it("translates 401 from GET into actionable error", async () => {
@@ -415,6 +487,24 @@ describe("npm_deprecate", () => {
     // Confirm the failure came from the PUT step, not the GET.
     assert.equal(requests.length, 2);
     assert.equal(requests[1].method, "PUT");
+  });
+
+  it("surfaces a translated 409 when the conflict survives the single retry", async () => {
+    mockFetchSequence([
+      { status: 200, body: samplePackument({ _rev: "1-abc" }) },
+      { status: 409, body: { error: "Conflict" } },
+      { status: 200, body: samplePackument({ _rev: "2-def" }) },
+      { status: 409, body: { error: "Conflict" } },
+    ]);
+    const tool = findTool(writeTools, "npm_deprecate");
+    const result = (await tool.handler({
+      name: "@test/pkg",
+      message: "deprecated — use newpkg",
+    })) as { ok: boolean; status: number; error: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 409);
+    assert.match(result.error, /Version conflict/);
+    assert.equal(requests.length, 4, "exactly one retry, then give up");
   });
 });
 

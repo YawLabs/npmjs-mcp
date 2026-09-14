@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.3] -- 2026-09-14
+
 ### Fixed
 - **`npm_check_auth` and `npm_publish_preflight` no longer tell you to set up an "automation token" or to run `npm login`.** Classic tokens, Automation tokens included, were revoked on 2025-12-09, and `npm login` replaces whatever token is in `~/.npmrc` with a 2FA-bound web session, so the next headless publish fails on an OTP challenge. Every publish hand-off now names a Granular Access Token with 2FA bypass, says so in its label, and notes that npm is targeting January 2027 to remove direct publish from bypass tokens too, so trusted publishing (OIDC) is the long-term path. The one-time `npm publish --access public --auth-type=web` hand-off is unchanged: it authenticates that single publish in a browser without writing a token.
 - `release.sh` strips the CRLF that `jq` emits on Windows when it syncs `server.json`, so the bump commit no longer trips git's "CRLF will be replaced by LF" warning on every release.
@@ -513,7 +515,8 @@ _Closes #1._
 - Initial release — 22 tools for npm registry intelligence (read-side).
 - Tool definition tests.
 
-[Unreleased]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.2...HEAD
+[Unreleased]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.3...HEAD
+[0.16.3]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.2...v0.16.3
 [0.16.2]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.1...v0.16.2
 [0.16.1]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.15.4...v0.16.0

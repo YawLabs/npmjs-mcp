@@ -1,5 +1,9 @@
 # @yawlabs/npmjs-mcp
 
+[![Add to Yaw MCP](https://yaw.sh/yaw-mcp-button.svg)](https://yaw.sh/mcp/install?name=npm&command=npx&args=-y%2C%40yawlabs%2Fnpmjs-mcp&description=npm%20registry%20-%20package%20intel%2C%20security%2C%20dependency%20analysis%2C%20write%20ops&source=https%3A%2F%2Fgithub.com%2FYawLabs%2Fnpmjs-mcp)
+
+One click adds this to your local Yaw MCP config so it's available in every Yaw Terminal session. Or install manually below.
+
 [![npm version](https://img.shields.io/npm/v/@yawlabs/npmjs-mcp)](https://www.npmjs.com/package/@yawlabs/npmjs-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![GitHub stars](https://img.shields.io/github/stars/YawLabs/npmjs-mcp)](https://github.com/YawLabs/npmjs-mcp/stargazers)
@@ -7,10 +11,6 @@
 **Run npm registry operations from Claude Code, Cursor, and any MCP client.** 64 tools covering the full registry surface: package intelligence, security audits, dependency analysis, org/team management, and the write ops that normally fight you locally (`npm deprecate`, `npm dist-tag`, `npm owner`, `npm unpublish`).
 
 Built and maintained by [Yaw Labs](https://yaw.sh).
-
-[![Add to Yaw MCP](https://yaw.sh/yaw-mcp-button.svg)](https://yaw.sh/mcp/install?name=npm&command=npx&args=-y%2C%40yawlabs%2Fnpmjs-mcp&description=npm%20registry%20-%20package%20intel%2C%20security%2C%20dependency%20analysis%2C%20write%20ops&source=https%3A%2F%2Fgithub.com%2FYawLabs%2Fnpmjs-mcp)
-
-One click adds this to your local Yaw MCP config so it's available in every Yaw Terminal session. Or install manually below.
 
 ## Why this one?
 
@@ -349,4 +349,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow, including release 
 
 MIT
 
-[![Follow @TokenLimitNews on X](https://img.shields.io/badge/follow-%40TokenLimitNews-000000?logo=x&logoColor=white)](https://x.com/TokenLimitNews)
+[![Follow @YawLabs on X](https://img.shields.io/badge/follow-%40YawLabs-000000?logo=x&logoColor=white)](https://x.com/YawLabs)

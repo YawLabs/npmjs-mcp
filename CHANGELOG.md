@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.4] -- 2026-09-29
+
 ### Documentation
 - **The README's Add to Yaw MCP button now sits directly under the title, and the follow badge links to @YawLabs.** The one-click install button and its one-line caption moved up from further down the page, so they are the first thing under the name on npm and GitHub, and the X badge at the bottom points at [@YawLabs](https://x.com/YawLabs) instead of @TokenLimitNews. npm shows the README from the published package, which is why it takes a release to carry this there; the package's code is unchanged from 0.16.3.
 
@@ -518,7 +520,8 @@ _Closes #1._
 - Initial release — 22 tools for npm registry intelligence (read-side).
 - Tool definition tests.
 
-[Unreleased]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.3...HEAD
+[Unreleased]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.4...HEAD
+[0.16.4]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.3...v0.16.4
 [0.16.3]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.2...v0.16.3
 [0.16.2]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.1...v0.16.2
 [0.16.1]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.0...v0.16.1

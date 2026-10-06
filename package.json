@@ -56,8 +56,8 @@
     "dev:oam": "oam run --check=warn src/index.ts"
   },
   "overrides": {
-    "hono": "^4.12.25",
-    "@hono/node-server": "^1.19.13"
+    "hono": "^4.13.7",
+    "@hono/node-server": "^1.19.15"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.13",

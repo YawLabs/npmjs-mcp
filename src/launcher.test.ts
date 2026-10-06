@@ -77,11 +77,11 @@ describe("launcher runtimePlan()", () => {
     // asking what it was already running on. `auto` and `oam` both have to take
     // the shortcut -- `oam` demands oam, and the host already is one.
     //
-    // 0.15.2 pins the floor as inclusive (it IS the supported release), and
-    // 0.100.0 pins a numeric compare: it sorts BEFORE 0.15.2 as a string, so a
+    // 0.18.0 pins the floor as inclusive (it IS the supported release), and
+    // 0.100.0 pins a numeric compare: it sorts BEFORE 0.18.0 as a string, so a
     // compare over the raw text would treat a newer oam as too old.
     for (const mode of ["auto", "oam"]) {
-      for (const hostOam of ["0.15.2", "0.16.0", "0.100.0", "1.0.0", "0.16.0-dev"]) {
+      for (const hostOam of ["0.18.0", "0.19.0", "0.100.0", "1.0.0", "0.19.0-dev"]) {
         assert.equal(runtimePlan({ mode, hostOam, sandbox: false }), "in-process", `mode=${mode} hostOam=${hostOam}`);
       }
     }
@@ -93,7 +93,7 @@ describe("launcher runtimePlan()", () => {
     // for -- a security downgrade that no other symptom would reveal, in a
     // process that may be holding an NPM_TOKEN.
     for (const mode of ["auto", "oam"]) {
-      for (const hostOam of [undefined, "0.15.2", "1.0.0"]) {
+      for (const hostOam of [undefined, "0.18.0", "0.19.0", "1.0.0", "0.17.0", "dev"]) {
         assert.equal(runtimePlan({ mode, hostOam, sandbox: true }), "discover", `mode=${mode} hostOam=${hostOam}`);
       }
     }
@@ -104,7 +104,7 @@ describe("launcher runtimePlan()", () => {
     // older than the latest release is not what the server is verified on, and
     // one older than 0.9.0 does not even hand over inherited stdio.
     for (const mode of ["auto", "oam"]) {
-      for (const hostOam of ["0.15.1", "0.9.0", "0.8.2", "0.0.1"]) {
+      for (const hostOam of ["0.17.0", "0.15.2", "0.9.0", "0.8.2", "0.0.1"]) {
         assert.equal(runtimePlan({ mode, hostOam, sandbox: false }), "discover", `mode=${mode} hostOam=${hostOam}`);
       }
     }
@@ -124,7 +124,7 @@ describe("launcher runtimePlan()", () => {
     // `node` outranks the sandbox: Node has no --permission to apply.
     for (const sandbox of [false, true]) {
       assert.equal(runtimePlan({ mode: "node", hostOam: undefined, sandbox }), "in-process", `sandbox=${sandbox}`);
-      for (const hostOam of ["0.8.2", "0.15.2", "1.0.0", "dev"]) {
+      for (const hostOam of ["0.8.2", "0.18.0", "1.0.0", "dev"]) {
         assert.equal(
           runtimePlan({ mode: "node", hostOam, sandbox }),
           "handoff-node",
@@ -140,25 +140,25 @@ describe("launcher pickNewest()", () => {
   const at = (path: string, version: number[] | null): Candidate => ({ path, version });
 
   it("pins the floor to the latest oam release", () => {
-    assert.deepEqual(floor, [0, 15, 2]);
+    assert.deepEqual(floor, [0, 18, 0]);
   });
 
   it("takes the newest usable oam, not the first one found", () => {
     // The bug: discovery stopped at the first binary that existed, so an older
     // copy in an earlier location (the installed dir is searched before PATH)
     // hid a newer one later.
-    const chosen = pickNewest([at("installed", [0, 15, 2]), at("path-a", [0, 16, 0]), at("path-b", [0, 15, 9])]);
+    const chosen = pickNewest([at("installed", [0, 18, 0]), at("path-a", [0, 19, 0]), at("path-b", [0, 18, 9])]);
     assert.equal(chosen?.path, "path-a");
   });
 
   it("compares numerically and keeps search order on a tie", () => {
-    assert.equal(pickNewest([at("a", [0, 16, 0]), at("b", [0, 100, 0])])?.path, "b");
-    assert.equal(pickNewest([at("first", [0, 15, 2]), at("second", [0, 15, 2])])?.path, "first");
+    assert.equal(pickNewest([at("a", [0, 19, 0]), at("b", [0, 100, 0])])?.path, "b");
+    assert.equal(pickNewest([at("first", [0, 18, 0]), at("second", [0, 18, 0])])?.path, "first");
   });
 
   it("skips binaries below the floor or with no readable version", () => {
-    assert.equal(pickNewest([at("old", [0, 9, 0]), at("broken", null), at("good", [0, 15, 2])])?.path, "good");
-    assert.equal(pickNewest([at("old", [0, 15, 1]), at("broken", null)]), null);
+    assert.equal(pickNewest([at("old", [0, 9, 0]), at("broken", null), at("good", [0, 18, 0])])?.path, "good");
+    assert.equal(pickNewest([at("old", [0, 17, 0]), at("broken", null)]), null);
     assert.equal(pickNewest([]), null);
   });
 });
@@ -313,13 +313,13 @@ describe("launcher on an oam host", () => {
   it("serves in-process instead of spawning a nested oam", { skip, timeout }, async () => {
     const envs: Record<string, string>[] = [{}, { NPMJS_MCP_RUNTIME: "oam" }];
     for (const extraEnv of envs) {
-      const run = await runLauncher("0.15.2", extraEnv);
+      const run = await runLauncher("0.18.0", extraEnv);
       assert.equal(servedInProcess(run), true, `${JSON.stringify(extraEnv)} -> ${JSON.stringify(run)}`);
     }
   });
 
   it("still spawns under NPMJS_MCP_SANDBOX=1, so --permission is not dropped", { skip, timeout }, async () => {
-    const run = await runLauncher("0.15.2", { NPMJS_MCP_SANDBOX: "1" });
+    const run = await runLauncher("0.18.0", { NPMJS_MCP_SANDBOX: "1" });
     assert.equal(servedInProcess(run), false, `the sandbox must force a spawn, got ${JSON.stringify(run)}`);
     assert.notEqual(run.code, 0);
     // A spawned child failing, not the launcher diagnosing: every launcher
@@ -328,7 +328,7 @@ describe("launcher on an oam host", () => {
   });
 
   it("still discovers when the host oam is below the floor", { skip, timeout }, async () => {
-    const run = await runLauncher("0.15.1");
+    const run = await runLauncher("0.17.0");
     assert.equal(servedInProcess(run), false, `a below-floor host must not shortcut, got ${JSON.stringify(run)}`);
     assert.notEqual(run.code, 0);
     assert.doesNotMatch(run.stderr, /^npmjs-mcp: /m);
@@ -366,7 +366,7 @@ describe("launcher with no usable oam", () => {
     assert.equal(run.stdout.trim(), PACKAGE_VERSION, "the Node child must still serve");
     assert.match(
       run.stderr,
-      /this process is oam 0\.9\.0, older than 0\.15\.2, and no newer oam was found; running on .*node/,
+      /this process is oam 0\.9\.0, older than 0\.18\.0, and no newer oam was found; running on .*node/,
     );
     // Served by the child, not in the launcher process: argv[1] was never
     // pointed at dist/index.js.
@@ -383,10 +383,13 @@ describe("launcher with no usable oam", () => {
   });
 
   it("hands NPMJS_MCP_RUNTIME=node off to Node even on a supported oam host", { skip, timeout }, async () => {
-    const run = await runLauncher("0.15.2", isolated({ NPMJS_MCP_RUNTIME: "node", NPMJS_MCP_SANDBOX: "1" }));
+    // The host sits AT the floor, so this exercises the "node was asked for"
+    // branch, not the below-floor handoff: no below-floor reason may appear.
+    const run = await runLauncher("0.18.0", isolated({ NPMJS_MCP_RUNTIME: "node", NPMJS_MCP_SANDBOX: "1" }));
     assert.equal(run.code, 0, JSON.stringify(run));
     assert.equal(run.stdout.trim(), PACKAGE_VERSION);
     assert.match(run.stderr, /LAUNCHER_ARGV1=.*npmjs-mcp\.mjs/);
+    assert.doesNotMatch(run.stderr, /older than \d+\.\d+\.\d+/);
   });
 
   it("says a requested sandbox was dropped when auto falls back to Node", { skip, timeout }, async () => {
@@ -404,19 +407,19 @@ describe("launcher with no usable oam", () => {
   }, async () => {
     // The host is itself a supported oam, so under `auto` the best-effort
     // sandbox degrades to the in-process shortcut -- not to a Node handoff.
-    const run = await runLauncher("0.15.2", isolated({ NPMJS_MCP_SANDBOX: "1", OAM_BIN: missingOamBin }));
+    const run = await runLauncher("0.18.0", isolated({ NPMJS_MCP_SANDBOX: "1", OAM_BIN: missingOamBin }));
     assert.equal(servedInProcess(run), true, JSON.stringify(run));
-    assert.match(run.stderr, /NPMJS_MCP_SANDBOX=1 is not applied .*; serving on this oam 0\.15\.2 process instead\.$/m);
+    assert.match(run.stderr, /NPMJS_MCP_SANDBOX=1 is not applied .*; serving on this oam 0\.18\.0 process instead\.$/m);
   });
 
   it("makes an unavailable sandbox fatal under NPMJS_MCP_RUNTIME=oam", { skip, timeout }, async () => {
     const run = await runLauncher(
-      "0.15.2",
+      "0.18.0",
       isolated({ NPMJS_MCP_SANDBOX: "1", NPMJS_MCP_RUNTIME: "oam", OAM_BIN: missingOamBin }),
     );
     assert.equal(run.code, 1, JSON.stringify(run));
     assert.equal(run.stdout.trim(), "", "nothing may be served");
-    assert.match(run.stderr, /^npmjs-mcp: NPMJS_MCP_RUNTIME=oam but no usable oam \(0\.15\.2 or newer\) was found\.$/m);
+    assert.match(run.stderr, /^npmjs-mcp: NPMJS_MCP_RUNTIME=oam but no usable oam \(0\.18\.0 or newer\) was found\.$/m);
   });
 
   /**
@@ -448,7 +451,7 @@ describe("launcher with no usable oam", () => {
     // A failed launch is not "no newer oam was found": one was found.
     assert.match(
       run.stderr,
-      /this process is oam 0\.9\.0, older than 0\.15\.2, and the oam chosen to replace it failed/,
+      /this process is oam 0\.9\.0, older than 0\.18\.0, and the oam chosen to replace it failed/,
     );
     assert.doesNotMatch(run.stderr, /no newer oam was found/);
     assert.match(run.stderr, /LAUNCHER_ARGV1=.*npmjs-mcp\.mjs/);
@@ -461,7 +464,7 @@ describe("launcher with no usable oam", () => {
     // dead child's 'close' lands within milliseconds of its 'error'; the hold
     // gives it far longer than that to kill a session that is already serving.
     const run = await serveLauncher(
-      "0.15.2",
+      "0.18.0",
       isolated({ NPMJS_MCP_SANDBOX: "1", OAM_BIN: process.execPath }),
       failFirstSpawn,
       1_500,
@@ -471,7 +474,7 @@ describe("launcher with no usable oam", () => {
     assert.equal(run.code, 0, JSON.stringify(run));
     assert.match(
       run.stderr,
-      /^npmjs-mcp: failed to launch oam at .*; NPMJS_MCP_SANDBOX=1 is not applied .*; serving on this oam 0\.15\.2 process instead\.$/m,
+      /^npmjs-mcp: failed to launch oam at .*; NPMJS_MCP_SANDBOX=1 is not applied .*; serving on this oam 0\.18\.0 process instead\.$/m,
     );
     assert.match(run.stderr, /LAUNCHER_ARGV1=.*dist[\\/]index\.js/);
   });

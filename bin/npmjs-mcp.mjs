@@ -134,7 +134,7 @@
  * runtime rather than trusted -- meaningful for a process holding an NPM_TOKEN.
  *
  * MINIMUM OAM VERSION
- * The latest oam release, 0.15.2 -- bump OAM_MIN when oam ships a newer one.
+ * The latest oam release, 0.18.0 -- bump OAM_MIN when oam ships a newer one.
  * Only the current oam is used and verified; an older one is never served on.
  * Below 0.9.0 `child_process.execFile` ran its arguments through a SHELL,
  * `exec`'s `timeout` was accepted and ignored, `spawnSync` truncated at
@@ -162,7 +162,7 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Oldest oam this launcher will run on. See MINIMUM OAM VERSION above. */
-const OAM_MIN = [0, 15, 2];
+const OAM_MIN = [0, 18, 0];
 
 /**
  * Bound on each `oam --version` probe. A healthy oam answers in milliseconds;

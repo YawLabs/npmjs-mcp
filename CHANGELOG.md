@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.5] -- 2026-10-06
+
 ### Security
 - **The bundled MCP SDK moves from 1.30.0 to 1.32.1** (GHSA-6qxp-vccf-f47h, high: the SDK's OAuth client could send credentials to an authorization server chosen by the MCP server; this server does not import that client, but the bundled SDK version changes). esbuild bundles the SDK into `dist/index.js`, so this ships in the package; the dependency floor is now `^1.32.1`. Its `fast-uri`, also bundled through ajv, moves from 3.1.7 to 3.1.8 (GHSA-hrr3-gc8f-f4qj, moderate: inconsistent host case normalization via percent-encoded octets). Development-scope only, not in the bundle: `proxy-addr` 2.0.8 (GHSA-jqcg-44mw-7w3h, critical: IP spoofing via an IPv4-mapped IPv6 trust subnet) and `ip-address` 10.7.3 (GHSA-j6r3-76f7-8jcv and GHSA-h3mg-xc3c-68pw, moderate: cross-family subnet checks and an unbounded parse diagnostic). The `overrides` floors for `hono` and `@hono/node-server` move from `^4.12.25` / `^1.19.13` to `^4.13.7` / `^1.19.15`: the installed 4.13.7 / 1.19.17 were already clean, but the old floors still admitted vulnerable releases; neither is in the bundle. `npm audit` reports 0 vulnerabilities.
 
@@ -531,7 +533,8 @@ _Closes #1._
 - Initial release — 22 tools for npm registry intelligence (read-side).
 - Tool definition tests.
 
-[Unreleased]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.4...HEAD
+[Unreleased]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.5...HEAD
+[0.16.5]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.4...v0.16.5
 [0.16.4]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.3...v0.16.4
 [0.16.3]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.2...v0.16.3
 [0.16.2]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.1...v0.16.2

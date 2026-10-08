@@ -337,7 +337,7 @@ async function request<T = unknown>(
       }
       return { ok: true, status: res.status, data };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = describeFetchError(err);
       // A network error or timeout on a write is ambiguous: the registry may
       // have applied the mutation and lost the response. Retrying re-sends it
       // with the same _rev, which comes back 409 and reads like a failure on an
@@ -366,6 +366,29 @@ async function request<T = unknown>(
   }
   // Unreachable — loop body always returns or continues within bounds
   return { ok: false, status: 0, error: "unreachable" };
+}
+
+/**
+ * A failed fetch, as one line that says what actually went wrong.
+ *
+ * fetch rejects with a generic TypeError -- "fetch failed", or "terminated"
+ * when the body read dies -- and puts the reason on `cause`: a coded error such
+ * as UND_ERR_CONNECT_TIMEOUT, UND_ERR_HEADERS_TIMEOUT, UND_ERR_SOCKET,
+ * ECONNREFUSED, ENOTFOUND or an ERR_SSL_* TLS failure. Node and oam (0.18.0 on)
+ * both have that shape, and the bare message tells the user nothing, so the
+ * code and message of the cause are appended when they add something.
+ */
+export function describeFetchError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const cause = err instanceof Error ? (err as { cause?: unknown }).cause : undefined;
+  if (!cause || typeof cause !== "object") return message;
+  const { code, message: causeMessage } = cause as { code?: unknown; message?: unknown };
+  const parts: string[] = [];
+  if (typeof code === "string" && code !== "" && !message.includes(code)) parts.push(code);
+  if (typeof causeMessage === "string" && causeMessage !== "" && causeMessage !== message && causeMessage !== code) {
+    parts.push(causeMessage);
+  }
+  return parts.length > 0 ? `${message} (${parts.join(": ")})` : message;
 }
 
 // ─── Registry API (public) ──────────────────────────────

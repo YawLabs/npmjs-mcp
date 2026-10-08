@@ -3,3 +3,8 @@
 *.jpg binary
 *.gif binary
 *.ico binary
+
+# Byte-exact: a signed oam release manifest, its signature, and the trust root
+# that verifies it. No line-ending normalisation, ever.
+scripts/oam-release-keys/** -text
+scripts/fixtures/oam-release/** -text

@@ -48,10 +48,11 @@
     "build": "tsc && node build.mjs",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
-    "test": "npm run build && node --test-timeout=300000 --test dist/api.test.js dist/release-metadata.test.js dist/update-manifests.test.js dist/launcher.test.js dist/tools/tools.test.js dist/tools/handlers.test.js dist/tools/writes.test.js dist/tools/hooks.test.js dist/index.test.js",
+    "test": "npm run build && node --test-timeout=300000 --test dist/api.test.js dist/release-metadata.test.js dist/update-manifests.test.js dist/oam-floor.test.js dist/oam-release-verify.test.js dist/launcher.test.js dist/tools/tools.test.js dist/tools/handlers.test.js dist/tools/writes.test.js dist/tools/hooks.test.js dist/index.test.js",
     "test:ci": "npm run test",
     "lint": "node scripts/lint.mjs check src/",
     "lint:fix": "node scripts/lint.mjs check --write src/",
+    "check:oam-floor": "node scripts/check-oam-floor.mjs",
     "prepublishOnly": "npm run build",
     "dev:oam": "oam run --check=warn src/index.ts"
   },

@@ -1,0 +1,5 @@
+4ba5a291d800618cda07ce42ac1c7fbc5841db941a22d328fb87534b3055b521 *oam-aarch64-apple-darwin
+039dccb29f7784cdc92b6165f7990650b3f82fceb4e77067a7bc4ba159083a73 *oam-aarch64-pc-windows-msvc.exe
+7ebdb580b5fa7b8c1108b5deb454812a0bc0e6b1da7ae60a37622805d8e92a72 *oam-x86_64-apple-darwin
+68eba2eed03a83b70428fdc49e28774eb998637600ce9238eac7d30c7da06c1a *oam-x86_64-pc-windows-msvc.exe
+9140fa0eabde83eef13c02aed871dbd2ea852f7283e238115c01ca4c57f21298 *oam-x86_64-unknown-linux-gnu

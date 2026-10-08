@@ -98,14 +98,19 @@
  * newest usable oam, or to Node found on PATH, or exits with an error when
  * there is neither.
  *
- * Any handoff FROM an oam host -- below the floor, spawning a fresh oam for the
- * sandbox, or handing off to Node under NPMJS_MCP_RUNTIME=node -- PIPES stdio
- * rather than inheriting it. Before 0.9.0 oam treated `stdio: 'inherit'` as
- * `'pipe'`, so an inherited handoff from such a host connected the child to
- * pipes nobody reads, and the MCP handshake never answered (measured with a
- * real oam 0.8.2 host). Piping the streams explicitly completes it, to both oam
- * and Node. A Node host keeps `inherit`, which hands over the same fds
- * untouched.
+ * A handoff FROM an oam host predating 0.9.0 PIPES stdio rather than
+ * inheriting it. Before 0.9.0 oam treated `stdio: 'inherit'` as `'pipe'`, so an
+ * inherited handoff from such a host connected the child to pipes nobody reads,
+ * and the MCP handshake never answered (measured with a real oam 0.8.2 host).
+ * Piping the streams explicitly completes it, to both oam and Node. Only the
+ * below-floor handoff can still start from such a host: the sandbox spawn and
+ * the NPMJS_MCP_RUNTIME=node handoff run from an oam at the floor, which hands
+ * inherited fds over correctly, so they keep `inherit` -- as a Node host does --
+ * rather than copying every MCP byte through this process. An oam host whose
+ * version cannot be read is treated as pre-0.9.0 and pipes; see pipesStdio.
+ *
+ * Every spawn from an oam host also gets an environment whose NODE_OPTIONS has
+ * the permission flags (`--permission`, `--allow-*`) taken out; see childEnv.
  *
  * THE `--permission` SANDBOX (opt-in)
  * This used to be a "deliberately not done" note: oam's `--permission` denied
@@ -152,6 +157,7 @@
  *                            on PATH when THIS process is oam. Never sandboxed.
  *   NPMJS_MCP_SANDBOX=1      spawn oam under --permission (see above)
  *   OAM_BIN=/path/to/oam     use this oam when it is usable, before discovery
+ *   OAM_INSTALL_DIR=/dir     searched first by discovery (oam's install target)
  * The runtime value is case-insensitive; anything else behaves like `auto`.
  */
 
@@ -200,8 +206,12 @@ function pathKey(p) {
  * usually has oam/target/release on PATH, and cargo replaces that binary
  * underneath running processes; OAM_BIN remains the way to point deliberately
  * at a dev build. Both forms are checked on Windows: the installer defaults to
- * %LOCALAPPDATA%\oam\bin there, but oam's docs name ~/.oam/bin first and
- * OAM_INSTALL_DIR can pick either.
+ * %LOCALAPPDATA%\oam\bin there, but oam's docs name ~/.oam/bin first.
+ *
+ * OAM_INSTALL_DIR, when set, is searched FIRST. oam documents it as the install
+ * target itself (docs/cli-reference.md: the bin directory, not its parent),
+ * so an oam installed there and never put on PATH is found only through it --
+ * and on a tie it is the copy the user deliberately chose.
  *
  * Windows: `.exe` ONLY -- deliberately narrower than PATHEXT. Node refuses to
  * run a .cmd/.bat through execFile/spawn without `shell: true` (EINVAL, and for
@@ -215,6 +225,7 @@ function discoverOamPaths() {
   if (isWin) {
     installed.unshift(join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "oam", "bin", exe));
   }
+  if (process.env.OAM_INSTALL_DIR) installed.unshift(join(process.env.OAM_INSTALL_DIR, exe));
   const onPath = (process.env.PATH ?? "")
     .split(delimiter)
     .filter(Boolean)
@@ -321,23 +332,31 @@ function runtimePlan({ mode, hostOam, sandbox }) {
  * argument '--permission' found"), which is a good failure -- but only because
  * it is loud. Ordering here is load-bearing.
  *
- * Net grants are matched by prefix against `host` for fetch and `host:port` for
- * sockets, so a bare hostname covers both.
+ * Net grants are compared EXACTLY, never by prefix: a request is checked as
+ * `host:port` -- the URL-normalised host, and the URL's port or its scheme's
+ * default -- against each entry. An entry without a port admits that host on
+ * every port; an entry with one admits only that port. oam 0.18.0 is the first
+ * release where a port-scoped entry admits fetch / http(s).request at all (up
+ * to 0.17.1 it admitted only net/tls sockets), and it is the floor, so every
+ * grant here is port-scoped: the server only ever speaks https, so 443 is all
+ * it needs, and a private registry gets exactly the port its URL names.
  */
 function sandboxFlags() {
   if (process.env.NPMJS_MCP_SANDBOX !== "1") return [];
 
-  // Every host the shipped bundle can reach. api.npmjs.org is NOT optional --
-  // it serves the download counts that npm_health folds into its result, and
-  // omitting it produces a null-populated answer with no error (see the header).
-  const hosts = ["registry.npmjs.org", "api.npmjs.org", "replicate.npmjs.com"];
+  // Every host the shipped bundle can reach, all over https. api.npmjs.org is
+  // NOT optional -- it serves the download counts that npm_health folds into
+  // its result, and omitting it produces a null-populated answer with no error
+  // (see the header).
+  const hosts = ["registry.npmjs.org:443", "api.npmjs.org:443", "replicate.npmjs.com:443"];
   // A private registry is a different host, so the grant has to learn about it.
-  // Parsed rather than pasted: NPM_REGISTRY is a URL, the grant wants a host.
+  // Parsed rather than pasted: NPM_REGISTRY is a URL, the grant wants
+  // host:port, and the port is the URL's own or its scheme's default.
   const registry = process.env.NPM_REGISTRY;
   if (registry) {
     try {
-      const { hostname } = new URL(registry);
-      if (hostname && !hosts.includes(hostname)) hosts.push(hostname);
+      const grant = netGrant(registry);
+      if (grant && !hosts.includes(grant)) hosts.push(grant);
     } catch {
       // Malformed NPM_REGISTRY: api.ts falls back to the public registry, which
       // is already granted. Nothing to add, and this is not the place to warn.
@@ -352,6 +371,19 @@ function sandboxFlags() {
   // No --allow-fs-read/write and no --allow-child-process: denying both is the
   // entire point. The server reads no files at runtime and spawns nothing.
   return ["--permission", `--allow-net=${hosts.join(",")}`, `--allow-env=${env.join(",")}`];
+}
+
+/**
+ * A URL -> its `--allow-net` entry, `host:port`, or null when it names no host.
+ * The port is the URL's own, else its scheme's default (`new URL` drops a port
+ * that equals the default, so `https://r.example:443/` and `https://r.example/`
+ * give the same entry). Throws on a malformed URL; the caller decides.
+ */
+function netGrant(url) {
+  const u = new URL(url);
+  if (!u.hostname) return null;
+  const port = u.port || { "https:": "443", "http:": "80" }[u.protocol];
+  return port ? `${u.hostname}:${port}` : u.hostname;
 }
 
 /**
@@ -408,7 +440,16 @@ function findNodeOnPath() {
   return null;
 }
 
-/** Why a candidate was passed over, for stderr. */
+/**
+ * Why a candidate was passed over, for stderr.
+ *
+ * Two different causes, and they need different remedies. A null `version` is
+ * NOT "old": oamVersion returns null when the binary could not be run at all
+ * (not executable, wrong arch, wedged, deleted between the stat and the probe)
+ * or when its --version output did not parse. Telling that user to
+ * `oam self-update` sends them after the one cause it definitely is not, so the
+ * wording splits here, and so does the remedy in `remedyFor`.
+ */
 function unusableReason(path, version, label = path) {
   const min = OAM_MIN.join(".");
   return version
@@ -418,20 +459,29 @@ function unusableReason(path, version, label = path) {
 
 /**
  * Choose the oam to spawn: a usable OAM_BIN, else the newest usable discovered
- * binary. Returns the choice (or null) plus stderr notes: `overrideNote` about
- * an unusable OAM_BIN, and `skipped` describing what was found and rejected
- * when nothing was usable.
+ * binary. Returns the choice (or null) plus what stderr needs:
+ *   overrideNote     why OAM_BIN was passed over, or null
+ *   skipped          why each discovered binary was passed over, when none was chosen
+ *   passedOver       the `version` of every existing binary rejected (OAM_BIN
+ *                    included), so a hard failure can name the right remedy
+ *   overrideMissing  OAM_BIN was set to a path that does not exist
  */
 function chooseOam() {
   const override = process.env.OAM_BIN;
   let overrideNote = null;
+  let overrideMissing = false;
+  const passedOver = [];
   if (override) {
     if (!existsSync(override)) {
       overrideNote = `OAM_BIN=${override} does not exist`;
+      overrideMissing = true;
     } else {
       const version = oamVersion(override);
-      if (atLeast(version, OAM_MIN)) return { chosen: { path: override, version }, overrideNote, skipped: [] };
+      if (atLeast(version, OAM_MIN)) {
+        return { chosen: { path: override, version }, overrideNote, skipped: [], passedOver, overrideMissing };
+      }
       overrideNote = unusableReason(override, version, `OAM_BIN=${override}`);
+      passedOver.push(version);
     }
   }
   const overrideKey = override ? pathKey(override) : null;
@@ -440,7 +490,42 @@ function chooseOam() {
     .map((path) => ({ path, version: oamVersion(path) }));
   const chosen = pickNewest(candidates);
   const skipped = chosen ? [] : candidates.map((c) => unusableReason(c.path, c.version));
-  return { chosen, overrideNote, skipped };
+  if (!chosen) passedOver.push(...candidates.map((c) => c.version));
+  return { chosen, overrideNote, skipped, passedOver, overrideMissing };
+}
+
+/**
+ * What would fix "no usable oam", one line per cause that was actually seen.
+ *
+ * An oam that is merely old is fixed by `oam self-update`, one that would not
+ * run by checking the binary, a missing OAM_BIN by pointing it somewhere real
+ * -- and only when nothing was found at all is "install oam" the answer. That
+ * last line is withheld on a platform oam publishes no build for: there is no
+ * linux-arm64 asset (oam ships darwin arm64/x64, windows arm64/x64 and linux
+ * x64), so on an arm64 Linux box -- a Pi, an arm64 cloud instance, WSL on an
+ * ARM Windows host -- "install oam" is an impossible remedy.
+ *
+ * Pure on purpose: `platform` / `arch` default to this process's, and the test
+ * passes its own.
+ */
+function remedyFor({ passedOver, overrideMissing, shim }, platform = process.platform, arch = process.arch) {
+  const lines = [];
+  if (passedOver.some((v) => v !== null)) {
+    lines.push(`Run \`oam self-update\` to get oam ${OAM_MIN.join(".")} or newer.\n`);
+  }
+  if (passedOver.some((v) => v === null)) {
+    lines.push("Check that it is an executable oam binary for this platform.\n");
+  }
+  if (overrideMissing) lines.push("Point OAM_BIN at an existing oam binary, or unset it.\n");
+  if (lines.length === 0 && !shim) {
+    lines.push(
+      platform === "linux" && arch !== "x64"
+        ? `oam publishes no build for linux-${arch}, so there is nothing to install here: set OAM_BIN=/path/to/oam if you built one yourself.\n`
+        : "Install oam from https://oamjs.org, or set OAM_BIN=/path/to/oam.\n",
+    );
+  }
+  lines.push("Or use NPMJS_MCP_RUNTIME=node to run on Node.\n");
+  return lines.join("");
 }
 
 /** Run the server in THIS process. The zero-overhead fallback. */
@@ -470,6 +555,62 @@ const fallbackFailed = (e) => {
 };
 
 /**
+ * Whether a spawn from this host must pipe stdio instead of inheriting it.
+ *
+ * Only an oam host from before 0.9.0 does: it treated `stdio: 'inherit'` as
+ * `'pipe'`, so the child got pipes nobody reads (see ALREADY RUNNING ON OAM).
+ * A Node host, and every oam from 0.9.0 on, hands the same fds over, and
+ * piping there would only copy every MCP byte through this process. An oam
+ * host whose version cannot be read never proved it is past that bug, so it
+ * pipes. Pure on purpose: `hostOam` is `process.versions.oam`.
+ */
+function pipesStdio(hostOam) {
+  return hostOam !== undefined && !atLeast(parseVersion(hostOam), [0, 9, 0]);
+}
+
+/**
+ * NODE_OPTIONS with the permission-model tokens -- `--permission` and every
+ * `--allow-*` -- taken out, or undefined when nothing is left.
+ *
+ * oam 0.18.0 copies its `--permission` / `--allow-*` flags into every child's
+ * NODE_OPTIONS, as node does, and reads them back from there. So an oam host
+ * running under a sandbox leaves those tokens in the environment this launcher
+ * passes on, and they do harm on both of its spawns:
+ *   - the sandboxed oam: inherited grants are folded in UNDER this launcher's
+ *     own flags, so a parent's `--allow-fs-read` could widen a sandbox whose
+ *     whole point is that filesystem and subprocess access stay denied. The
+ *     grant list in sandboxFlags has to be the entire grant.
+ *   - Node: `--allow-net` / `--allow-env` are oam's, and a node that does not
+ *     know a flag in NODE_OPTIONS refuses to start (exit 9).
+ * Tokens are whitespace-separated, as node splits the variable; every other
+ * token is kept as written.
+ */
+function stripPermissionOptions(value) {
+  const kept = value
+    .split(/\s+/)
+    .filter((token) => token && token !== "--permission" && !token.startsWith("--allow-"));
+  return kept.length > 0 ? kept.join(" ") : undefined;
+}
+
+/**
+ * The environment a child is spawned with: process.env as is on Node, and on
+ * an oam host a copy whose NODE_OPTIONS has lost its permission tokens (see
+ * stripPermissionOptions). process.env itself is never modified. What this
+ * cannot undo: oam re-appends the flags on its own command line (its
+ * process.execArgv) at spawn time unless the child's argv holds
+ * `--permission` -- which the sandbox spawn's does. Pure on purpose.
+ */
+function childEnv(env, hostOam) {
+  if (hostOam === undefined || !env.NODE_OPTIONS) return env;
+  const kept = stripPermissionOptions(env.NODE_OPTIONS);
+  if (kept === env.NODE_OPTIONS) return env;
+  const copy = { ...env };
+  if (kept === undefined) delete copy.NODE_OPTIONS;
+  else copy.NODE_OPTIONS = kept;
+  return copy;
+}
+
+/**
  * Spawn the server in a child runtime and mirror its lifetime.
  *
  * `onLaunchFailed(err)` runs when the child could not be started at all; it is
@@ -479,10 +620,9 @@ const fallbackFailed = (e) => {
 async function launchChild(cmd, args, onLaunchFailed) {
   // THIS process being an oam means one below the floor, one spawning a fresh
   // oam to apply the sandbox, or one handing off to Node under
-  // NPMJS_MCP_RUNTIME=node. An oam older than 0.9.0 does not hand over the fds
-  // for `stdio: 'inherit'`, so pipe explicitly from every oam host; see
-  // ALREADY RUNNING ON OAM.
-  const piped = process.versions.oam !== undefined;
+  // NPMJS_MCP_RUNTIME=node. Only the first can be an oam from before 0.9.0,
+  // which does not hand over the fds for `stdio: 'inherit'`; see pipesStdio.
+  const piped = pipesStdio(process.versions.oam);
   let child = null;
   try {
     child = spawn(cmd, args, {
@@ -491,7 +631,7 @@ async function launchChild(cmd, args, onLaunchFailed) {
       // server's shutdown path. Piping preserves both as well: bytes are copied
       // unchanged, and stdin's end propagates to the child.
       stdio: piped ? ["pipe", "pipe", "pipe"] : "inherit",
-      env: process.env,
+      env: childEnv(process.env, process.versions.oam),
       windowsHide: true,
     });
   } catch (err) {
@@ -670,7 +810,7 @@ if (plan === "in-process") {
   const belowFloor = !atLeast(parseVersion(hostOam), OAM_MIN);
   await handOffToNode(belowFloor ? `this process is oam ${hostOam}, older than ${OAM_MIN.join(".")}` : "");
 } else {
-  const { chosen, overrideNote, skipped } = chooseOam();
+  const { chosen, overrideNote, skipped, passedOver, overrideMissing } = chooseOam();
 
   if (chosen) {
     if (overrideNote) {
@@ -706,7 +846,7 @@ if (plan === "in-process") {
       await errSync(
         `npmjs-mcp: NPMJS_MCP_RUNTIME=oam but no usable oam (${OAM_MIN.join(".")} or newer) was found.\n` +
           notes.map((note) => `  ${note}\n`).join("") +
-          "Install or update from https://oamjs.org, set OAM_BIN=/path/to/oam, or use NPMJS_MCP_RUNTIME=node.\n",
+          remedyFor({ passedOver, overrideMissing, shim }),
       );
       process.exit(1);
     }

@@ -357,6 +357,23 @@ npm run build || fail "Build failed"
 npm test || fail "Tests failed"
 info "All tests passed"
 
+# Is the oam floor still the latest oam release? The launcher is verified on one
+# oam release at a time (OAM_MIN in bin/npmjs-mcp.mjs), and oam ships faster than
+# this server does -- 0.16.3 was published two hours before the aws-mcp release
+# that pinned it. So ask before publishing rather than discovering it in a bug
+# report.
+#
+# The DRIFT half of this check (does the whole repo agree on the floor?) needs no
+# network and runs in the test suite above (src/oam-floor.test.ts).
+#
+# Exits non-zero when the floor is behind; NPMJS_MCP_ALLOW_STALE_OAM=1 is the
+# deliberate way past it. A machine with no network is not a failure -- the check
+# says so and continues.
+if [ -f scripts/check-oam-floor.mjs ]; then
+  echo ""
+  node scripts/check-oam-floor.mjs || fail "oam floor check failed -- see above. Set NPMJS_MCP_ALLOW_STALE_OAM=1 to release on the old floor deliberately."
+fi
+
 # =============================================================================
 # Step 3: Bump version
 # =============================================================================

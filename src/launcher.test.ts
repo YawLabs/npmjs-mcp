@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -33,6 +33,7 @@ function extract(patterns: RegExp[]): string {
 }
 
 const OAM_MIN_DECL = /const OAM_MIN = \[[^\]]*\];/;
+const PARSE_VERSION_DECL = /function parseVersion\(text\) \{[\s\S]*?\n\}/;
 const ATLEAST_DECL = /function atLeast\(v, min\) \{[\s\S]*?\n\}/;
 
 /**
@@ -53,7 +54,7 @@ const ATLEAST_DECL = /function atLeast\(v, min\) \{[\s\S]*?\n\}/;
 function loadRuntimePlan(): RuntimePlan {
   const pieces = extract([
     OAM_MIN_DECL,
-    /function parseVersion\(text\) \{[\s\S]*?\n\}/,
+    PARSE_VERSION_DECL,
     ATLEAST_DECL,
     /function runtimePlan\(\{ mode, hostOam, sandbox \}\) \{[\s\S]*?\n\}/,
   ]);
@@ -160,6 +161,164 @@ describe("launcher pickNewest()", () => {
     assert.equal(pickNewest([at("old", [0, 9, 0]), at("broken", null), at("good", [0, 18, 0])])?.path, "good");
     assert.equal(pickNewest([at("old", [0, 17, 0]), at("broken", null)]), null);
     assert.equal(pickNewest([]), null);
+  });
+});
+
+describe("launcher pipesStdio()", () => {
+  const pipesStdio = new Function(
+    `${extract([PARSE_VERSION_DECL, ATLEAST_DECL, /function pipesStdio\(hostOam\) \{[\s\S]*?\n\}/])}\nreturn pipesStdio;`,
+  )() as (hostOam: string | undefined) => boolean;
+
+  it("pipes only from an oam host from before 0.9.0, or one whose version cannot be read", () => {
+    // Before 0.9.0 oam treated `stdio: 'inherit'` as 'pipe'. Every oam at the
+    // floor hands the fds over, so the sandbox spawn and the NPMJS_MCP_RUNTIME=node
+    // handoff -- both from an oam at the floor -- must not relay every byte.
+    for (const hostOam of ["0.8.2", "0.0.1", "dev", ""]) assert.equal(pipesStdio(hostOam), true, hostOam);
+    for (const hostOam of [undefined, "0.9.0", "0.17.0", "0.18.0", "1.0.0"]) {
+      assert.equal(pipesStdio(hostOam), false, String(hostOam));
+    }
+  });
+});
+
+describe("launcher childEnv()", () => {
+  type Env = Record<string, string | undefined>;
+  const childEnv = new Function(
+    `${extract([/function stripPermissionOptions\(value\) \{[\s\S]*?\n\}/, /function childEnv\(env, hostOam\) \{[\s\S]*?\n\}/])}\nreturn childEnv;`,
+  )() as (env: Env, hostOam: string | undefined) => Env;
+
+  it("drops --permission and every --allow-* from NODE_OPTIONS on an oam host, keeping the rest", () => {
+    // oam 0.18.0 hands its permission flags to every child in NODE_OPTIONS. A
+    // Node child refuses to start on oam's --allow-net (exit 9), and the sandboxed
+    // oam would fold an inherited --allow-fs-read under its own grant list.
+    const env = {
+      PATH: "p",
+      NODE_OPTIONS: "--no-warnings --permission --allow-fs-read=* --allow-net=x:443 --expose-gc",
+    };
+    const out = childEnv(env, "0.18.0");
+    assert.equal(out.NODE_OPTIONS, "--no-warnings --expose-gc");
+    assert.equal(out.PATH, "p");
+    assert.equal(env.NODE_OPTIONS, "--no-warnings --permission --allow-fs-read=* --allow-net=x:443 --expose-gc");
+  });
+
+  it("removes NODE_OPTIONS entirely when only permission tokens were in it", () => {
+    const out = childEnv({ NODE_OPTIONS: "--permission --allow-env=NPM_TOKEN" }, "0.18.0");
+    assert.equal("NODE_OPTIONS" in out, false);
+  });
+
+  it("passes the environment through untouched on Node, or when there is nothing to strip", () => {
+    const env = { NODE_OPTIONS: "--permission --allow-fs-read=*" };
+    assert.equal(childEnv(env, undefined), env);
+    const clean = { NODE_OPTIONS: "--no-warnings" };
+    assert.equal(childEnv(clean, "0.18.0"), clean);
+    const none = { PATH: "p" };
+    assert.equal(childEnv(none, "0.18.0"), none);
+  });
+});
+
+describe("launcher sandboxFlags()", () => {
+  const sandboxFlags = new Function(
+    `${extract([/function sandboxFlags\(\) \{[\s\S]*?\n\}/, /function netGrant\(url\) \{[\s\S]*?\n\}/])}\nreturn sandboxFlags;`,
+  )() as () => string[];
+
+  function flagsWith(env: Record<string, string>): string[] {
+    const saved = { ...process.env };
+    try {
+      delete process.env.NPM_REGISTRY;
+      Object.assign(process.env, { NPMJS_MCP_SANDBOX: "1" }, env);
+      return sandboxFlags();
+    } finally {
+      for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+      Object.assign(process.env, saved);
+    }
+  }
+  const net = (flags: string[]) => flags.find((f) => f.startsWith("--allow-net="));
+
+  it("port-scopes every grant: oam compares host:port exactly, and the server only speaks https", () => {
+    assert.equal(net(flagsWith({})), "--allow-net=registry.npmjs.org:443,api.npmjs.org:443,replicate.npmjs.com:443");
+  });
+
+  it("grants a private registry its own port, or its scheme's default", () => {
+    assert.match(net(flagsWith({ NPM_REGISTRY: "https://npm.corp.example:8443/" })) ?? "", /,npm\.corp\.example:8443$/);
+    assert.match(net(flagsWith({ NPM_REGISTRY: "http://verdaccio.local/" })) ?? "", /,verdaccio\.local:80$/);
+    assert.match(net(flagsWith({ NPM_REGISTRY: "https://npm.corp.example:443" })) ?? "", /,npm\.corp\.example:443$/);
+    // The public registry by URL is already granted, so it is not repeated.
+    assert.equal(net(flagsWith({ NPM_REGISTRY: "https://registry.npmjs.org/" }))?.split(",").length, 3);
+    // A malformed one adds nothing: api.ts falls back to the public registry.
+    assert.equal(net(flagsWith({ NPM_REGISTRY: "not a url" }))?.split(",").length, 3);
+  });
+});
+
+describe("launcher remedyFor()", () => {
+  type Remedy = (
+    ctx: { passedOver: (number[] | null)[]; overrideMissing: boolean; shim: string | null },
+    platform?: string,
+    arch?: string,
+  ) => string;
+  const remedyFor = new Function(
+    `${extract([OAM_MIN_DECL, /function remedyFor\([^)]*\) \{[\s\S]*?\n\}/])}\nreturn remedyFor;`,
+  )() as Remedy;
+  const none = { passedOver: [], overrideMissing: false, shim: null };
+
+  it("tells an outdated oam to self-update, not to visit the website", () => {
+    const text = remedyFor({ ...none, passedOver: [[0, 17, 0]] }, "win32", "arm64");
+    assert.match(text, /Run `oam self-update` to get oam 0\.18\.0 or newer/);
+    assert.doesNotMatch(text, /oamjs\.org/);
+  });
+
+  it("tells an unrunnable oam to check the binary, not to update it", () => {
+    const text = remedyFor({ ...none, passedOver: [null] }, "linux", "x64");
+    assert.match(text, /executable oam binary/);
+    assert.doesNotMatch(text, /self-update|oamjs\.org/);
+  });
+
+  it("points a missing OAM_BIN somewhere real", () => {
+    assert.match(remedyFor({ ...none, overrideMissing: true }, "darwin", "arm64"), /Point OAM_BIN at an existing/);
+  });
+
+  it("sends someone with no oam at all to install it, except where no build exists", () => {
+    assert.match(remedyFor(none, "darwin", "arm64"), /Install oam from https:\/\/oamjs\.org/);
+    assert.match(remedyFor(none, "linux", "x64"), /Install oam from https:\/\/oamjs\.org/);
+    const arm = remedyFor(none, "linux", "arm64");
+    assert.match(arm, /no build for linux-arm64/);
+    assert.doesNotMatch(arm, /oamjs\.org/);
+  });
+
+  it("always offers Node", () => {
+    for (const ctx of [none, { ...none, passedOver: [[0, 1, 0]] }]) {
+      assert.match(remedyFor(ctx, "win32", "x64"), /NPMJS_MCP_RUNTIME=node/);
+    }
+  });
+});
+
+describe("launcher discoverOamPaths()", () => {
+  it("searches OAM_INSTALL_DIR first", () => {
+    const source = readFileSync(LAUNCHER, "utf-8");
+    const isWinDecl = source.match(/const isWin = [^;]*;/)?.[0];
+    const exeDecl = source.match(/const exe = [^;]*;/)?.[0];
+    assert.ok(isWinDecl && exeDecl, "could not extract isWin / exe");
+    const discoverOamPaths = new Function(
+      "existsSync",
+      "realpathSync",
+      "homedir",
+      "join",
+      "delimiter",
+      `${isWinDecl}\n${exeDecl}\n${extract([/function pathKey\(p\) \{[\s\S]*?\n\}/, /function discoverOamPaths\(\) \{[\s\S]*?\n\}/])}\nreturn discoverOamPaths;`,
+    )(existsSync, realpathSync, homedir, join, delimiter) as () => string[];
+
+    const installDir = mkdtempSync(join(tmpdir(), "npmjs-mcp-install-dir-"));
+    const binary = join(installDir, process.platform === "win32" ? "oam.exe" : "oam");
+    writeFileSync(binary, "");
+    const saved = process.env.OAM_INSTALL_DIR;
+    try {
+      process.env.OAM_INSTALL_DIR = installDir;
+      assert.equal(discoverOamPaths()[0], binary);
+      delete process.env.OAM_INSTALL_DIR;
+      assert.equal(discoverOamPaths().includes(binary), false);
+    } finally {
+      if (saved === undefined) delete process.env.OAM_INSTALL_DIR;
+      else process.env.OAM_INSTALL_DIR = saved;
+      rmSync(installDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -327,6 +486,36 @@ describe("launcher on an oam host", () => {
     assert.doesNotMatch(run.stderr, /^npmjs-mcp: /m);
   });
 
+  // Records what the launcher hands spawn(), and gives it the NODE_OPTIONS a
+  // sandboxed oam parent would: oam 0.18.0 copies --permission / --allow-* there.
+  // (writeSync is already imported by the exit marker launcherCommand prepends.)
+  const recordSpawn = [
+    'import childProcess from "node:child_process";',
+    'import { syncBuiltinESMExports } from "node:module";',
+    'process.env.NODE_OPTIONS = "--no-warnings --permission --allow-fs-read=* --allow-net=evil.example";',
+    "const realSpawn = childProcess.spawn;",
+    "childProcess.spawn = function (cmd, args, opts) {",
+    '  writeSync(2, "SPAWN_STDIO=" + JSON.stringify(opts.stdio) + "\\n");',
+    '  writeSync(2, "SPAWN_NODE_OPTIONS=" + JSON.stringify(opts.env.NODE_OPTIONS ?? null) + "\\n");',
+    "  return realSpawn.call(this, cmd, args, opts);",
+    "};",
+    "syncBuiltinESMExports();",
+  ].join("\n");
+
+  it("inherits stdio for the sandbox spawn on an oam 0.18.0 host, with the permission tokens stripped", {
+    skip,
+    timeout,
+  }, async () => {
+    const run = await runLauncher("0.18.0", { NPMJS_MCP_SANDBOX: "1" }, recordSpawn);
+    assert.match(run.stderr, /^SPAWN_STDIO="inherit"$/m, JSON.stringify(run));
+    assert.match(run.stderr, /^SPAWN_NODE_OPTIONS="--no-warnings"$/m, JSON.stringify(run));
+  });
+
+  it("control: still pipes stdio from an oam host predating 0.9.0", { skip, timeout }, async () => {
+    const run = await runLauncher("0.8.2", {}, recordSpawn);
+    assert.match(run.stderr, /^SPAWN_STDIO=\["pipe","pipe","pipe"\]$/m, JSON.stringify(run));
+  });
+
   it("still discovers when the host oam is below the floor", { skip, timeout }, async () => {
     const run = await runLauncher("0.17.0");
     assert.equal(servedInProcess(run), false, `a below-floor host must not shortcut, got ${JSON.stringify(run)}`);
@@ -420,6 +609,10 @@ describe("launcher with no usable oam", () => {
     assert.equal(run.code, 1, JSON.stringify(run));
     assert.equal(run.stdout.trim(), "", "nothing may be served");
     assert.match(run.stderr, /^npmjs-mcp: NPMJS_MCP_RUNTIME=oam but no usable oam \(0\.18\.0 or newer\) was found\.$/m);
+    // The remedy names the cause that was seen -- a missing OAM_BIN -- and not a
+    // reinstall nobody needs.
+    assert.match(run.stderr, /^Point OAM_BIN at an existing oam binary, or unset it\.$/m);
+    assert.doesNotMatch(run.stderr, /oamjs\.org/);
   });
 
   /**

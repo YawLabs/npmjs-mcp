@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { after, afterEach, describe, it } from "node:test";
 import {
   createLimiter,
+  describeFetchError,
   encPkg,
   encScope,
   encTag,
@@ -557,6 +558,21 @@ describe("retry/backoff on transient failures", () => {
     assert.equal(i, 3);
   });
 
+  it("names the coded cause of a fetch failure, not just 'fetch failed'", async () => {
+    // fetch rejects with a generic TypeError and puts the reason on `cause` --
+    // on oam 0.18.0's new connect timeout as on Node's undici.
+    process.env.NPM_RETRY_BACKOFF_MS = "0";
+    globalThis.fetch = (async () => {
+      const cause = Object.assign(new Error("Connect Timeout Error"), { code: "UND_ERR_CONNECT_TIMEOUT" });
+      throw new TypeError("fetch failed", { cause });
+    }) as typeof fetch;
+
+    const res = await registryGet("/test");
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 0);
+    assert.equal(res.error, "fetch failed (UND_ERR_CONNECT_TIMEOUT: Connect Timeout Error)");
+  });
+
   it("registryPost retries transient failures", async () => {
     process.env.NPM_RETRY_BACKOFF_MS = "0";
     const methods: string[] = [];
@@ -575,6 +591,30 @@ describe("retry/backoff on transient failures", () => {
     assert.equal(res.ok, true);
     assert.equal(i, 2);
     assert.deepEqual(methods, ["POST", "POST"]);
+  });
+});
+
+describe("describeFetchError", () => {
+  it("appends the code and message of the cause", () => {
+    const cause = Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" });
+    assert.equal(
+      describeFetchError(new TypeError("terminated", { cause })),
+      "terminated (UND_ERR_SOCKET: other side closed)",
+    );
+  });
+
+  it("keeps a message that already says it all", () => {
+    assert.equal(describeFetchError(new TypeError("fetch failed")), "fetch failed");
+    assert.equal(describeFetchError("boom"), "boom");
+    const denied = Object.assign(new Error("Access to this API has been restricted"), { code: "ERR_ACCESS_DENIED" });
+    assert.equal(describeFetchError(denied), "Access to this API has been restricted");
+  });
+
+  it("adds only the part that is new", () => {
+    const codeOnly = Object.assign(new Error(""), { code: "ECONNREFUSED" });
+    assert.equal(describeFetchError(new TypeError("fetch failed", { cause: codeOnly })), "fetch failed (ECONNREFUSED)");
+    const same = new Error("fetch failed");
+    assert.equal(describeFetchError(new TypeError("fetch failed", { cause: same })), "fetch failed");
   });
 });
 

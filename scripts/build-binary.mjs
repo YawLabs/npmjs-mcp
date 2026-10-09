@@ -28,6 +28,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import esbuild from 'esbuild';
 import { inject } from 'postject';
+import { fetchVerifiedSums } from './oam-release-verify.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
@@ -121,7 +122,36 @@ async function appendOamPayload(carrier, jsPath, outPath) {
   if (!targetIsWin) chmodSync(outPath, 0o755);
 }
 
-/** Fetch the published oam release binary for TARGET, verified against SHA256SUMS. */
+/**
+ * The oam release to fetch a carrier from: OAM_VERSION when set, else the
+ * launcher's floor (OAM_MIN in bin/npmjs-mcp.mjs) -- the one release this server
+ * is verified on. Never 'latest': the signed manifest binds its signature to
+ * ONE tag, so verification needs to know which tag it asked for, and a moving
+ * 'latest' would also build on a release nobody verified the server on.
+ */
+function oamReleaseTag() {
+  const requested = process.env.OAM_VERSION;
+  if (requested) {
+    const m = /^v?(\d+\.\d+\.\d+)$/.exec(requested.trim());
+    if (!m) {
+      console.error(`build-binary: OAM_VERSION=${requested} is not a plain release version (e.g. 0.18.0 or v0.18.0).`);
+      process.exit(1);
+    }
+    return `v${m[1]}`;
+  }
+  const launcher = readFileSync(join(repoRoot, 'bin', `${binName}.mjs`), 'utf-8');
+  const floor = /const OAM_MIN = \[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]/.exec(launcher);
+  if (!floor) {
+    console.error(`build-binary: could not read OAM_MIN from bin/${binName}.mjs; set OAM_VERSION.`);
+    process.exit(1);
+  }
+  return `v${floor[1]}.${floor[2]}.${floor[3]}`;
+}
+
+/**
+ * Fetch the published oam release binary for TARGET, verified against the
+ * release's signed RELEASE-MANIFEST (see scripts/oam-release-verify.mjs).
+ */
 async function fetchOamCarrier(target) {
   const asset = OAM_ASSETS[target];
   if (!asset) {
@@ -131,12 +161,26 @@ async function fetchOamCarrier(target) {
     );
     process.exit(1);
   }
-  const tag = process.env.OAM_VERSION ?? 'latest';
-  const base =
-    tag === 'latest'
-      ? 'https://github.com/YawLabs/oam/releases/latest/download'
-      : `https://github.com/YawLabs/oam/releases/download/${tag}`;
+  const tag = oamReleaseTag();
+  const base = `https://github.com/YawLabs/oam/releases/download/${tag}`;
   const dest = join(tmpDir, asset);
+
+  // Integrity is not optional for a binary we are about to ship inside our own,
+  // and a SHA256SUMS served beside the binary proves nothing about who uploaded
+  // both. So the expected hash comes from the release's SIGNED manifest, checked
+  // against oam's release keys (vendored in scripts/oam-release-keys/), BEFORE
+  // the binary is downloaded. Pre-v0.18.0 tags have no manifest and are held to
+  // a pinned digest of their SHA256SUMS instead. Every failure stops the build.
+  let want;
+  try {
+    const { sums, how } = await fetchVerifiedSums(base, tag);
+    want = sums.get(asset);
+    if (!want) throw new Error(`${asset} is not listed in the ${how} for ${tag}`);
+    console.log(`  ${tag}: ${how} verified`);
+  } catch (err) {
+    console.error(`build-binary: refusing an unverified oam carrier: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
 
   console.log(`> fetch ${base}/${asset}`);
   const res = await fetch(`${base}/${asset}`);
@@ -146,21 +190,6 @@ async function fetchOamCarrier(target) {
   }
   writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
 
-  // Integrity is not optional for a binary we are about to ship inside our own.
-  const sumsRes = await fetch(`${base}/SHA256SUMS`);
-  if (!sumsRes.ok) {
-    console.error(`build-binary: could not fetch SHA256SUMS (HTTP ${sumsRes.status}); refusing to use an unverified carrier`);
-    process.exit(1);
-  }
-  const sums = await sumsRes.text();
-  const want = sums
-    .split('\n')
-    .map((l) => l.trim().split(/\s+/))
-    .find(([, name]) => name?.replace(/^\*/, '') === asset)?.[0];
-  if (!want) {
-    console.error(`build-binary: ${asset} has no entry in SHA256SUMS; refusing to use an unverified carrier`);
-    process.exit(1);
-  }
   const got = createHash('sha256').update(readFileSync(dest)).digest('hex');
   if (got !== want) {
     console.error(`build-binary: SHA256 mismatch for ${asset}\n  expected ${want}\n  got      ${got}`);
@@ -168,6 +197,23 @@ async function fetchOamCarrier(target) {
   }
   console.log(`  sha256 ok (${got.slice(0, 16)}...)`);
   return dest;
+}
+
+/**
+ * The Windows oam binaries are Authenticode-signed from oam 0.18.0 on, and the
+ * signature does not survive the append. Measured on the v0.18.0
+ * oam-x86_64-pc-windows-msvc.exe carrier: Get-AuthenticodeSignature reports the
+ * carrier Valid and the appended artifact NotSigned, although the artifact still
+ * holds the carrier's certificate table. So the artifact ships unsigned in
+ * effect. Nothing here strips or re-signs it -- say so, the way the macOS note
+ * does for Mach-O.
+ */
+function windowsSignatureNote() {
+  if (!targetIsWin) return;
+  console.log('    Windows: the oam carrier is Authenticode-signed, but the appended artifact is not');
+  console.log('    (Get-AuthenticodeSignature: NotSigned). To ship it signed, remove the carrier\'s');
+  console.log('    signature BEFORE appending (signtool remove /s) and sign the finished artifact;');
+  console.log('    this script automates neither.');
 }
 
 async function buildViaOam() {
@@ -206,6 +252,7 @@ async function buildViaOam() {
       console.log('    macOS: appending invalidates any Mach-O signature and arm64 refuses to exec an');
       console.log('    unsigned/invalid one. Ad-hoc sign on a mac (codesign -s -) or with rcodesign.');
     }
+    windowsSignatureNote();
     return;
   }
 
@@ -213,6 +260,7 @@ async function buildViaOam() {
   console.log('');
   console.log(`OK  ${outExe}  (oam carrier)`);
   console.log(`    ${fmtSize(outExe)}`);
+  windowsSignatureNote();
 }
 
 mkdirSync(tmpDir, { recursive: true });

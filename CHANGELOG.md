@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] -- 2026-10-09
+
 ### Changed
 - **`NPMJS_MCP_SANDBOX=1` now grants the network by `host:port`.** The `--allow-net` list is `registry.npmjs.org:443,api.npmjs.org:443,replicate.npmjs.com:443`, plus `NPM_REGISTRY`'s host with its own port, or 443 / 80 for `https` / `http`, instead of bare hostnames. oam compares each request as `host:port` exactly -- a bare host admits every port, and nothing is matched by prefix, as a launcher comment used to claim -- and 0.18.0, the floor, is the first oam whose port-scoped entries admit `fetch` at all. Re-measured on the published oam 0.18.0 aarch64-pc-windows-msvc binary through the launcher: `npm_health` for `express` still returns its download counts from api.npmjs.org.
 - **The launcher no longer copies every MCP byte through itself when it spawns from an oam host.** The sandbox spawn and the `NPMJS_MCP_RUNTIME=node` handoff now hand the child the launcher's own stdin, stdout and stderr (`stdio: 'inherit'`), as they always did from a Node host. Only a host oam predating 0.9.0, which mishandled `inherit`, still pipes, and that host can only reach the below-floor handoff. Measured with the published oam 0.18.0 as the host: both paths answer `initialize` and a live tool call.
@@ -547,7 +549,8 @@ _Closes #1._
 - Initial release — 22 tools for npm registry intelligence (read-side).
 - Tool definition tests.
 
-[Unreleased]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.5...HEAD
+[Unreleased]: https://github.com/YawLabs/npmjs-mcp/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.5...v0.17.0
 [0.16.5]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.4...v0.16.5
 [0.16.4]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.3...v0.16.4
 [0.16.3]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.2...v0.16.3

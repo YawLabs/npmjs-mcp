@@ -1,33 +1,32 @@
 #!/usr/bin/env node
-// Build a self-contained single-file binary of this MCP server.
+// Build a self-contained single-file binary of this MCP server on an oam
+// carrier.
 //
 // Strategy: esbuild bundles src/index.ts + ALL its dependencies (including
 // the externals tsup leaves out -- @modelcontextprotocol/sdk and undici)
 // into ONE CommonJS file with zero remaining node_modules resolution, then
-// Node's Single Executable Application (SEA) feature embeds that bundle as a
-// resource inside a copy of the node binary. The result runs with no Node,
-// no node_modules, and no PATH dependency.
+// that bundle is appended to an oam runtime binary as a tail-trailer payload
+// (see appendOamPayload). The result runs with no Node, no node_modules, and
+// no PATH dependency.
 //
-// Why not `deno compile`? Deno was not installed on the build host at authoring
-// time (`deno --version` -> command not found). The project itself is fully
-// Deno-compatible in principle (clean ESM, no native addons), but the node:
-// builtin imports in the bundle are bare (`fs`, not `node:fs`), which Deno
-// rejects without a compat shim. Node SEA needs no such rewrite and ships with
-// the Node already on the box, so it is the zero-friction path here. (An
-// earlier version of this comment pointed at a BINARY_DISTRIBUTION.md for the
-// deno/bun fallbacks; that document does not exist in this repo.)
+// The bundle MUST be CJS: oam runs the embedded file as CommonJS, so the ESM
+// bundle build.mjs writes to dist/index.js would die at startup on its
+// `import` banner. We re-bundle here rather than reuse dist/index.js.
 //
 // This script ONLY reads node_modules (via esbuild's resolver) and writes to
 // build-tmp/ and bin/<platform>-<arch>/. It does NOT mutate package.json,
 // package-lock.json, src/, or node_modules, and it never runs `npm install`.
+//
+// Usage:
+//   node scripts/build-binary-oam.mjs                                  # host build
+//   NPMJS_MCP_BINARY_TARGET=linux-x64 node scripts/build-binary-oam.mjs  # cross build
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import esbuild from 'esbuild';
-import { inject } from 'postject';
 import { fetchVerifiedSums } from './oam-release-verify.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -40,19 +39,6 @@ const { version } = pkg;
 // copy-paste generic across @yawlabs/* servers -- no per-repo rename.
 const binName = Object.keys(pkg.bin ?? {})[0] ?? pkg.name.split('/').pop();
 
-// ── Which toolchain, and for which target ────────────────────────────────
-//   node (default) -- Node SEA: blob + postject injection + macOS re-sign.
-//                     Host-only, because it uses THIS node as the carrier.
-//   oam            -- append the payload to an oam binary. Can CROSS-BUILD,
-//                     because oam's embed format is a tail trailer rather
-//                     than section surgery (see appendOamPayload).
-//
-// Default stays `node`: SEA is what the shipped Scoop/Homebrew binaries were
-// built with and is proven on all five targets. The oam path is verified to
-// produce a running binary on windows-arm64 only -- appending is proven for
-// every target, executing is not.
-const BINARY_RUNTIME = (process.env.NPMJS_MCP_BINARY_RUNTIME ?? 'node').toLowerCase();
-
 // Release assets published at github.com/YawLabs/oam/releases, keyed by the
 // `${process.platform}-${process.arch}` shape this script already uses.
 const OAM_ASSETS = {
@@ -63,9 +49,9 @@ const OAM_ASSETS = {
   'linux-x64': 'oam-x86_64-unknown-linux-gnu',
 };
 
-// NPMJS_MCP_BINARY_TARGET cross-builds for another platform. Only meaningful
-// on the oam path; the SEA path has no equivalent because it carries the
-// running node.
+// NPMJS_MCP_BINARY_TARGET cross-builds for another platform. The carrier for
+// the target is fetched from the oam release; the payload is the same bytes
+// on every target.
 const TARGET = (process.env.NPMJS_MCP_BINARY_TARGET ?? `${process.platform}-${process.arch}`).toLowerCase();
 const isCross = TARGET !== `${process.platform}-${process.arch}`;
 const targetIsWin = TARGET.startsWith('win32');
@@ -73,8 +59,7 @@ const targetIsWin = TARGET.startsWith('win32');
 const platformDir = TARGET;
 const binDir = join(repoRoot, 'bin', platformDir);
 const tmpDir = join(repoRoot, 'build-tmp');
-const bundlePath = join(tmpDir, 'sea-bundle.cjs');
-const blobPath = join(tmpDir, 'sea-bundle.blob');
+const bundlePath = join(tmpDir, 'oam-bundle.cjs');
 // Name the artifact for the TARGET, not the host -- a cross-built win32 binary
 // still needs its .exe suffix.
 const exeName = targetIsWin ? `${binName}.exe` : binName;
@@ -94,7 +79,7 @@ function fmtSize(p) {
  * Append a pre-bundled CJS file to an oam carrier binary, producing a
  * standalone executable.
  *
- * WHY THIS CAN CROSS-BUILD AND NODE SEA CANNOT
+ * WHY THIS CAN CROSS-BUILD
  * oam's embed format is a TAIL TRAILER, documented in the runtime source
  * (crates/oam_cli/src/main.rs, `COMPILE_MAGIC`):
  *
@@ -110,8 +95,7 @@ function fmtSize(p) {
  * WE WRITE v1, DELIBERATELY. v2 embeds V8 bytecode, which is architecture- and
  * V8-version-specific -- appending arm64 bytecode to an x86_64 carrier would be
  * wrong. v1 is a first-class format the runtime reads and that `oam compile`
- * itself falls back to. The cost is losing the first-run parse skip, the same
- * trade the SEA path makes when `useCodeCache` is off for a cross-build.
+ * itself falls back to. The cost is losing the first-run parse skip.
  */
 async function appendOamPayload(carrier, jsPath, outPath) {
   const js = readFileSync(jsPath);
@@ -134,7 +118,7 @@ function oamReleaseTag() {
   if (requested) {
     const m = /^v?(\d+\.\d+\.\d+)$/.exec(requested.trim());
     if (!m) {
-      console.error(`build-binary: OAM_VERSION=${requested} is not a plain release version (e.g. 0.18.0 or v0.18.0).`);
+      console.error(`build-binary-oam: OAM_VERSION=${requested} is not a plain release version (e.g. 0.18.0 or v0.18.0).`);
       process.exit(1);
     }
     return `v${m[1]}`;
@@ -142,7 +126,7 @@ function oamReleaseTag() {
   const launcher = readFileSync(join(repoRoot, 'bin', `${binName}.mjs`), 'utf-8');
   const floor = /const OAM_MIN = \[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]/.exec(launcher);
   if (!floor) {
-    console.error(`build-binary: could not read OAM_MIN from bin/${binName}.mjs; set OAM_VERSION.`);
+    console.error(`build-binary-oam: could not read OAM_MIN from bin/${binName}.mjs; set OAM_VERSION.`);
     process.exit(1);
   }
   return `v${floor[1]}.${floor[2]}.${floor[3]}`;
@@ -156,7 +140,7 @@ async function fetchOamCarrier(target) {
   const asset = OAM_ASSETS[target];
   if (!asset) {
     console.error(
-      `build-binary: no oam release asset known for target '${target}'.\n` +
+      `build-binary-oam: no oam release asset known for target '${target}'.\n` +
         `Known targets: ${Object.keys(OAM_ASSETS).join(', ')}`,
     );
     process.exit(1);
@@ -178,21 +162,21 @@ async function fetchOamCarrier(target) {
     if (!want) throw new Error(`${asset} is not listed in the ${how} for ${tag}`);
     console.log(`  ${tag}: ${how} verified`);
   } catch (err) {
-    console.error(`build-binary: refusing an unverified oam carrier: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`build-binary-oam: refusing an unverified oam carrier: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
 
   console.log(`> fetch ${base}/${asset}`);
   const res = await fetch(`${base}/${asset}`);
   if (!res.ok) {
-    console.error(`build-binary: downloading ${asset} failed (HTTP ${res.status})`);
+    console.error(`build-binary-oam: downloading ${asset} failed (HTTP ${res.status})`);
     process.exit(1);
   }
   writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
 
   const got = createHash('sha256').update(readFileSync(dest)).digest('hex');
   if (got !== want) {
-    console.error(`build-binary: SHA256 mismatch for ${asset}\n  expected ${want}\n  got      ${got}`);
+    console.error(`build-binary-oam: SHA256 mismatch for ${asset}\n  expected ${want}\n  got      ${got}`);
     process.exit(1);
   }
   console.log(`  sha256 ok (${got.slice(0, 16)}...)`);
@@ -256,6 +240,8 @@ async function buildViaOam() {
     return;
   }
 
+  // `--version` is the only subcommand src/index.ts implements; anything else
+  // falls through to starting the stdio MCP server, which just blocks on stdin.
   run(outExe, ['--version']);
   console.log('');
   console.log(`OK  ${outExe}  (oam carrier)`);
@@ -283,83 +269,11 @@ await esbuild.build({
   // makes the branch dead code, but relying on dead-code elimination for
   // correctness is how the top-level-await footgun got in here before. Shim it
   // instead, so the bundle is sound whether or not the branch is eliminated.
-  banner: { js: "const __seaImportMetaUrl = require('node:url').pathToFileURL(__filename).href;" },
-  define: { __VERSION__: JSON.stringify(version), 'import.meta.url': '__seaImportMetaUrl' },
+  banner: { js: "const __oamImportMetaUrl = require('node:url').pathToFileURL(__filename).href;" },
+  define: { __VERSION__: JSON.stringify(version), 'import.meta.url': '__oamImportMetaUrl' },
   outfile: bundlePath,
 });
 console.log(`bundle: ${fmtSize(bundlePath)}`);
 
-// ── oam path: one append replaces steps 2-5 below ────────────────────────
-if (BINARY_RUNTIME === 'oam') {
-  await buildViaOam();
-  process.exit(0);
-}
-
-if (isCross) {
-  console.error(
-    `build-binary: NPMJS_MCP_BINARY_TARGET=${TARGET} only works with NPMJS_MCP_BINARY_RUNTIME=oam.\n` +
-      'The SEA path embeds the running node as its carrier and cannot cross-build.',
-  );
-  process.exit(1);
-}
-
-// 2. Generate the SEA blob from sea-config.json.
-run(process.execPath, ['--experimental-sea-config', 'sea-config.json']);
-console.log(`blob:   ${fmtSize(blobPath)}`);
-
-// 3. Copy the running node binary as the carrier.
-rmSync(outExe, { force: true });
-copyFileSync(process.execPath, outExe);
-// copyFileSync does not reliably carry the executable bit on Unix; the macOS
-// exec-check below and the CI smoke test both need to run this file.
-if (!isWin) chmodSync(outExe, 0o755);
-
-// macOS: strip the carrier node binary's existing signature BEFORE injecting,
-// so postject doesn't leave a CORRUPT signature (which is worse than none --
-// arm64 SIGKILLs a bad-sig binary at exec). We ad-hoc re-sign after step 4.
-// Best-effort: an already-unsigned carrier makes `--remove-signature` exit
-// non-zero, which must NOT abort the build -- the --force re-sign is what
-// actually matters.
-if (process.platform === 'darwin') {
-  try {
-    run('codesign', ['--remove-signature', outExe]);
-  } catch {
-    console.log('(carrier had no signature to remove -- continuing)');
-  }
-}
-
-// 4. Inject the SEA blob via postject's JS API (pinned devDep). NOT the npx
-//    CLI: locating npx-cli.js off the node binary is Windows-only (Unix keeps
-//    npm under ../lib/node_modules, not ./node_modules), and npx-on-demand
-//    adds a network dependency to every CI build. The API is cross-platform.
-await inject(outExe, 'NODE_SEA_BLOB', readFileSync(blobPath), {
-  sentinelFuse: 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2',
-  machoSegmentName: process.platform === 'darwin' ? 'NODE_SEA' : undefined,
-});
-console.log('injection done');
-
-// 5. macOS: ad-hoc re-sign AFTER injection. Apple Silicon refuses to exec a
-//    Mach-O with no/invalid signature ("killed: 9"); `--sign -` is the free
-//    ad-hoc identity (no cert, no notarization). Distribution is via the
-//    Homebrew TAP (a formula), whose curl fetch sets no com.apple.quarantine,
-//    so Gatekeeper never blocks it -- ad-hoc is sufficient. `--force` replaces
-//    any residual signature; `--timestamp=none` keeps it offline/reproducible.
-if (process.platform === 'darwin') {
-  run('codesign', ['--sign', '-', '--force', '--timestamp=none', outExe]);
-  run('codesign', ['--verify', '--verbose', outExe]);
-  // --verify proves the signature is intact, NOT that the binary launches.
-  // arm64 SIGKILLs a bad-sig Mach-O only at exec, so actually run it -- this
-  // is the real check the whole remove/re-sign dance defends. (CI also smoke-
-  // tests, but a standalone `node scripts/build-binary.mjs` on a Mac should
-  // catch a non-launching binary too.)
-  run(outExe, ['--version']);
-}
-
-console.log('');
-console.log(`OK  ${outExe}`);
-console.log(`    ${fmtSize(outExe)}`);
-console.log('');
-// `--version` is the only subcommand src/index.ts implements; anything else
-// falls through to starting the stdio MCP server, which just blocks on stdin.
-console.log('Verify with:');
-console.log(`    "${outExe}" --version`);
+// 2. Append the bundle to the oam carrier.
+await buildViaOam();

@@ -46,6 +46,7 @@
   ],
   "scripts": {
     "build": "tsc && node build.mjs",
+    "build:binary:oam": "node scripts/build-binary-oam.mjs",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "test": "npm run build && node --test-timeout=300000 --test dist/api.test.js dist/release-metadata.test.js dist/update-manifests.test.js dist/oam-floor.test.js dist/oam-release-verify.test.js dist/launcher.test.js dist/tools/tools.test.js dist/tools/handlers.test.js dist/tools/writes.test.js dist/tools/hooks.test.js dist/index.test.js",
@@ -65,7 +66,6 @@
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@types/node": "^26.5.1",
     "esbuild": "^0.28.2",
-    "postject": "^1.0.0-alpha.6",
     "typescript": "^7.0.2",
     "zod": "^4.6.5"
   },

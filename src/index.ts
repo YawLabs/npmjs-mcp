@@ -23,7 +23,7 @@ import { writeTools } from "./tools/writes.js";
 //
 // Deliberately NOT `await import("node:module")`: a top-level await here is
 // unrepresentable in the CJS output format the single-binary build uses
-// (scripts/build-binary.mjs), and it only ever compiled because the
+// (scripts/build-binary-oam.mjs), and it only ever compiled because the
 // `__VERSION__` define let esbuild dead-code-eliminate this branch before the
 // CJS emit. That made a build-breaking construct silently load-bearing on
 // constant folding. A static import plus a plain function has no such coupling.

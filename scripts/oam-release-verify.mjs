@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Verify an oam release the way oam's own installers do, before a downloaded
- * oam binary is trusted as a carrier (scripts/build-binary.mjs).
+ * oam binary is trusted as a carrier (scripts/build-binary-oam.mjs).
  *
  * WHY NOT SHA256SUMS
  * SHA256SUMS proves a download matches the release it came from. It cannot

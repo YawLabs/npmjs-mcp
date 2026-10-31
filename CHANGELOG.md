@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The oam floor moves from 0.18.0 to 0.19.1, so the `npmjs-mcp` launcher no longer runs the server on oam 0.18.x or 0.19.0.** 0.19.1 is the latest oam release, and the server is verified on one release at a time. Verified on the installed oam 0.19.1 through the launcher with `OAM_BIN` pointing at it, `NPMJS_MCP_RUNTIME=oam` and `NPMJS_MCP_SANDBOX=1`: the launcher spawns `oam --permission --allow-net=registry.npmjs.org:443,api.npmjs.org:443,replicate.npmjs.com:443 --allow-env=NPM_TOKEN,NPM_REGISTRY,NPM_REQUEST_TIMEOUT_MS,NPM_RETRY_BACKOFF_MS,DEBUG run .../dist/index.js`, a full MCP handshake lists all 64 tools, and live `npm_package` and `npm_health` calls for `express` answer, with download counts from api.npmjs.org. An oam from 0.18.0 to 0.19.0 found by the launcher is now passed over: under the default `NPMJS_MCP_RUNTIME=auto` it falls back to Node, and under `NPMJS_MCP_RUNTIME=oam` it exits with an error, naming the version it found and the floor. Run `oam self-update`.
+
+### Fixed
+- **`NPMJS_MCP_SANDBOX` accepts `1` or `true` in any case, with surrounding whitespace ignored.** It was an exact `=== "1"` compare, so cmd.exe's `set NPMJS_MCP_SANDBOX=1 && ...`, which keeps the space before `&&`, or `NPMJS_MCP_SANDBOX=true` ran the server without the sandbox and said nothing. Any other non-empty value still leaves the sandbox off, and now says so once on stderr.
+- **`NPMJS_MCP_RUNTIME` is trimmed before it is read.** `set NPMJS_MCP_RUNTIME=node && ...` gave `node `, which behaved like `auto`.
+- **`scripts/check-oam-floor.mjs` runs from a junctioned or symlinked checkout.** It decided it was the main module by comparing `process.argv[1]` with its own URL, which Node realpaths while leaving argv[1] as typed, so through a link the check never ran and exited 0 in silence. Both sides are now realpath'd.
+
 ## [0.17.0] -- 2026-10-09
 
 ### Changed

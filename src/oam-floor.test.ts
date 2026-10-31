@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { after, describe, it } from "node:test";
@@ -51,6 +51,32 @@ describe("the oam floor is consistent across this repo", () => {
     const r = runChecker(repoRoot);
     assert.equal(r.code, 0, `check-oam-floor reported drift in this repo:\n${r.out}`);
     assert.match(r.out, /no drift/);
+  });
+
+  it("runs from a junctioned or symlinked checkout instead of exiting 0 in silence", () => {
+    // Node realpaths the main module's URL but not argv[1], so the old resolve()
+    // compare skipped main() through a link: no output, exit 0, a silent pass.
+    const root = mkdtempSync(join(tmpdir(), "npmjs-mcp-floor-link-"));
+    dirs.push(root);
+    const linked = join(root, "scripts");
+    symlinkSync(join(repoRoot, "scripts"), linked, "junction");
+    try {
+      const r = spawnSync(process.execPath, [join(linked, "check-oam-floor.mjs"), "--offline", "--root", repoRoot], {
+        encoding: "utf8",
+        timeout: 60_000,
+      });
+      const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+      assert.equal(r.status, 0, out);
+      assert.match(out, /oam floor \(OAM_MIN in bin\/npmjs-mcp\.mjs\)/, "main() must have run");
+    } finally {
+      // Remove the link itself, non-recursively, before after()'s recursive rm
+      // of the temp root can ever walk into the real scripts/ through it.
+      try {
+        unlinkSync(linked);
+      } catch {
+        rmdirSync(linked);
+      }
+    }
   });
 });
 

@@ -139,7 +139,7 @@
  * runtime rather than trusted -- meaningful for a process holding an NPM_TOKEN.
  *
  * MINIMUM OAM VERSION
- * The latest oam release, 0.18.0 -- bump OAM_MIN when oam ships a newer one.
+ * The latest oam release, 0.19.1 -- bump OAM_MIN when oam ships a newer one.
  * Only the current oam is used and verified; an older one is never served on.
  * Below 0.9.0 `child_process.execFile` ran its arguments through a SHELL,
  * `exec`'s `timeout` was accepted and ignored, `spawnSync` truncated at
@@ -155,10 +155,12 @@
  *                            it, unless the sandbox is requested)
  *   NPMJS_MCP_RUNTIME=node   Node: in THIS process on Node, handed off to Node
  *                            on PATH when THIS process is oam. Never sandboxed.
- *   NPMJS_MCP_SANDBOX=1      spawn oam under --permission (see above)
+ *   NPMJS_MCP_SANDBOX=1      spawn oam under --permission (see above);
+ *                            `true` works too, any other value is off
  *   OAM_BIN=/path/to/oam     use this oam when it is usable, before discovery
  *   OAM_INSTALL_DIR=/dir     searched first by discovery (oam's install target)
- * The runtime value is case-insensitive; anything else behaves like `auto`.
+ * Both values are case-insensitive and trimmed; any other runtime behaves like
+ * `auto`.
  */
 
 import { execFileSync, spawn } from "node:child_process";
@@ -168,7 +170,7 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Oldest oam this launcher will run on. See MINIMUM OAM VERSION above. */
-const OAM_MIN = [0, 18, 0];
+const OAM_MIN = [0, 19, 1];
 
 /**
  * Bound on each `oam --version` probe. A healthy oam answers in milliseconds;
@@ -325,6 +327,16 @@ function runtimePlan({ mode, hostOam, sandbox }) {
 }
 
 /**
+ * Is an on/off opt-in on? `1` or `true`, in any case, with surrounding
+ * whitespace ignored: cmd.exe's `set NPMJS_MCP_SANDBOX=1 && ...` keeps the
+ * space before `&&`, and an exact `=== "1"` compare quietly ran that
+ * unsandboxed. Anything else is off.
+ */
+function isFeatureEnabled(value) {
+  return /^(1|true)$/i.test((value ?? "").trim());
+}
+
+/**
  * The `--permission` grant list, or [] when the sandbox is not requested.
  *
  * These are oam's PROCESS-level flags: they go before the `run` subcommand, not
@@ -335,14 +347,14 @@ function runtimePlan({ mode, hostOam, sandbox }) {
  * Net grants are compared EXACTLY, never by prefix: a request is checked as
  * `host:port` -- the URL-normalised host, and the URL's port or its scheme's
  * default -- against each entry. An entry without a port admits that host on
- * every port; an entry with one admits only that port. oam 0.18.0 is the first
+ * every port; an entry with one admits only that port. oam 0.18.0 was the first
  * release where a port-scoped entry admits fetch / http(s).request at all (up
- * to 0.17.1 it admitted only net/tls sockets), and it is the floor, so every
- * grant here is port-scoped: the server only ever speaks https, so 443 is all
+ * to 0.17.1 it admitted only net/tls sockets), and the floor is past it, so
+ * every grant here is port-scoped: the server only ever speaks https, so 443 is all
  * it needs, and a private registry gets exactly the port its URL names.
  */
 function sandboxFlags() {
-  if (process.env.NPMJS_MCP_SANDBOX !== "1") return [];
+  if (!isFeatureEnabled(process.env.NPMJS_MCP_SANDBOX)) return [];
 
   // Every host the shipped bundle can reach, all over https. api.npmjs.org is
   // NOT optional -- it serves the download counts that npm_health folds into
@@ -792,12 +804,23 @@ function fallbackTarget(hostOam) {
     : "using Node instead";
 }
 
-const mode = (process.env.NPMJS_MCP_RUNTIME ?? "auto").toLowerCase();
+// Trimmed for the same cmd.exe `set X=node && ...` trailing space that
+// isFeatureEnabled handles: untrimmed, `node ` silently behaved like `auto`.
+const mode = (process.env.NPMJS_MCP_RUNTIME ?? "auto").trim().toLowerCase();
 const hostOam = process.versions.oam;
 // The sandbox is read off the grant list rather than NPMJS_MCP_SANDBOX, so
 // "would the spawn carry --permission" cannot drift from what the spawn below
 // actually passes.
 const sandbox = sandboxFlags();
+// A sandbox value that is set but not recognised leaves the sandbox off. Said
+// once, because a security opt-in that silently did nothing is the failure no
+// other symptom reveals.
+const sandboxRaw = (process.env.NPMJS_MCP_SANDBOX ?? "").trim();
+if (sandboxRaw !== "" && sandbox.length === 0) {
+  await errSync(
+    `npmjs-mcp: NPMJS_MCP_SANDBOX=${JSON.stringify(process.env.NPMJS_MCP_SANDBOX)} is not 1 or true; the sandbox is off.\n`,
+  );
+}
 const plan = runtimePlan({ mode, hostOam, sandbox: sandbox.length > 0 });
 // Falling back never carries --permission. Said out loud, because the whole
 // hazard of a dropped sandbox is that nothing else reveals it.

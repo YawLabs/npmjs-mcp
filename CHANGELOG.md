@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The oam floor moves from 0.19.1 to 0.19.5, so the `npmjs-mcp` launcher no longer runs the server on oam 0.19.1 through 0.19.4.** 0.19.5 is the latest oam release, and the server is verified on one release at a time. Verified on the installed oam 0.19.5 through the launcher with `OAM_BIN` pointing at it and `NPMJS_MCP_RUNTIME=oam`, with and without `NPMJS_MCP_SANDBOX=1`: a full MCP handshake lists all 64 tools, and live `npm_package` and `npm_health` calls for `express` answer, with download counts from api.npmjs.org. An oam from 0.19.1 to 0.19.4 found by the launcher is now passed over: under the default `NPMJS_MCP_RUNTIME=auto` it falls back to Node, and under `NPMJS_MCP_RUNTIME=oam` it exits with an error, naming the version it found and the floor. Run `oam self-update`.
+
 ## [0.17.2] -- 2026-11-11
 
 ### Security

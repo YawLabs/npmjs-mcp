@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.3] -- 2026-11-11
+
 ### Changed
 - **The oam floor moves from 0.19.1 to 0.19.5, so the `npmjs-mcp` launcher no longer runs the server on oam 0.19.1 through 0.19.4.** 0.19.5 is the latest oam release, and the server is verified on one release at a time. Verified on the installed oam 0.19.5 through the launcher with `OAM_BIN` pointing at it and `NPMJS_MCP_RUNTIME=oam`, with and without `NPMJS_MCP_SANDBOX=1`: a full MCP handshake lists all 64 tools, and live `npm_package` and `npm_health` calls for `express` answer, with download counts from api.npmjs.org. An oam from 0.19.1 to 0.19.4 found by the launcher is now passed over: under the default `NPMJS_MCP_RUNTIME=auto` it falls back to Node, and under `NPMJS_MCP_RUNTIME=oam` it exits with an error, naming the version it found and the floor. Run `oam self-update`.
 
@@ -567,7 +569,8 @@ _Closes #1._
 - Initial release — 22 tools for npm registry intelligence (read-side).
 - Tool definition tests.
 
-[Unreleased]: https://github.com/YawLabs/npmjs-mcp/compare/v0.17.2...HEAD
+[Unreleased]: https://github.com/YawLabs/npmjs-mcp/compare/v0.17.3...HEAD
+[0.17.3]: https://github.com/YawLabs/npmjs-mcp/compare/v0.17.2...v0.17.3
 [0.17.2]: https://github.com/YawLabs/npmjs-mcp/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/YawLabs/npmjs-mcp/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/YawLabs/npmjs-mcp/compare/v0.16.5...v0.17.0

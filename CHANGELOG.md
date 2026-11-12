@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **Patched transitive dependency advisories; `npm audit` reports 0 vulnerabilities.** fast-uri 3.1.9 (path equivalence, scheme spoofing, scheme injection and host confusion in URI normalization), hono 4.13.18 and @hono/node-server 2.1.7 (`serveStatic` double-decoding the request path), plus body-parser, ip-address, qs and zod 4.6.7 via `npm audit fix`. The `overrides` floors move to `hono ^4.13.11` and `@hono/node-server ^2.1.3`; no 1.x @hono/node-server is patched, and the MCP SDK accepts `^2.0.5`. These are bundled into `dist/` at build time; the zod fix matters most, as zod validates every tool's input. The hono, body-parser and qs paths belong to the SDK's HTTP transports, which this stdio server does not use.
+
 ## [0.17.1] -- 2026-10-30
 
 ### Changed
